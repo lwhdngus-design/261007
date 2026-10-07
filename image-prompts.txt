@@ -1,0 +1,99 @@
+==================================================================
+ ABC라이프케어 랜딩 페이지 — 이미지 생성 프롬프트
+==================================================================
+사용 방법
+1) 각 [PROMPT] 블록을 그대로 복사해 Midjourney / DALL·E / Stable Diffusion 등에 붙여넣으세요.
+2) 생성된 이미지를 index.html과 같은 폴더의 "images" 폴더에 아래 [파일명]으로 저장하면 자동 표시됩니다.
+3) 이미지가 없을 때는 파스텔 배경으로 대체 표시됩니다.
+4) Midjourney 사용 시 프롬프트 끝의 --ar 비율 옵션을 그대로 쓰고, 다른 도구는 해당 부분을 지우고 사이즈를 따로 지정하세요.
+
+[공통 스타일] — 모든 이미지에 동일하게 포함되어 있습니다.
+soft pastel color palette (mint, peach, powder blue, butter yellow, lavender), minimal and clean, warm natural daylight, calm and trustworthy mood, plenty of negative space
+
+[공통 네거티브 프롬프트] — Stable Diffusion 등 네거티브 입력란이 있는 경우 사용
+text, letters, logo, watermark, signature, blurry, low quality, distorted hands, extra fingers, deformed face, oversaturated colors, harsh shadows, dark mood, cluttered background
+
+
+------------------------------------------------------------------
+1. 메인 히어로 이미지
+[파일명] images/hero.jpg
+[비율] 4:5 (세로형, 권장 1200x1500)
+[위치] 첫 화면 오른쪽 메인 비주얼
+[PROMPT]
+A warm, friendly Korean consultant in her 40s having a relaxed conversation with a middle-aged Korean couple at a light wooden table in a bright minimal consultation room, notebook and cups of tea on the table, everyone smiling naturally, soft pastel color palette (mint, peach, powder blue), minimal and clean interior with a small green plant, warm natural daylight from a large window, calm and trustworthy mood, plenty of negative space, editorial lifestyle photography, shallow depth of field --ar 4:5
+
+
+------------------------------------------------------------------
+2. 서비스 — 건강
+[파일명] images/service-health.jpg
+[비율] 4:3 (권장 1200x900)
+[위치] 서비스 섹션 첫 번째 카드
+[PROMPT]
+Minimal still life of healthy lifestyle objects on a pastel peach background: a fresh salad bowl, a glass of water with lemon, a yoga mat rolled up, a stethoscope and running shoes neatly arranged, soft pastel color palette (peach and mint), minimal and clean composition, warm natural daylight, soft shadows, calm and trustworthy mood, plenty of negative space, top-down flat lay photography --ar 4:3
+
+
+------------------------------------------------------------------
+3. 서비스 — 재무
+[파일명] images/service-finance.jpg
+[비율] 4:3 (권장 1200x900)
+[위치] 서비스 섹션 두 번째 카드
+[PROMPT]
+Minimal still life on a pastel powder blue background: a small glass jar with coins and a tiny green sprout growing from it, a simple calculator, a notebook with a hand-drawn upward graph, and a pen, soft pastel color palette (powder blue and mint), minimal and clean composition, warm natural daylight, soft shadows, calm and trustworthy mood, plenty of negative space, no readable text, product photography --ar 4:3
+
+
+------------------------------------------------------------------
+4. 서비스 — 가족
+[파일명] images/service-family.jpg
+[비율] 4:3 (권장 1200x900)
+[위치] 서비스 섹션 세 번째 카드
+[PROMPT]
+Three generations of a Korean family (grandparents, parents and a young child) sitting together on a cozy sofa in a bright minimal living room, laughing and looking at a photo album, soft pastel color palette (butter yellow and peach), minimal and clean interior, warm natural daylight, calm and heartwarming mood, plenty of negative space, candid lifestyle photography --ar 4:3
+
+
+------------------------------------------------------------------
+5. 서비스 — 은퇴
+[파일명] images/service-retirement.jpg
+[비율] 4:3 (권장 1200x900)
+[위치] 서비스 섹션 네 번째 카드
+[PROMPT]
+A happy Korean couple in their early 60s walking hand in hand along a quiet park path in early spring, casual neat clothing, gentle smiles, soft pastel color palette (lavender and mint), blooming trees, minimal and clean composition, warm natural morning light, calm and hopeful mood, plenty of negative space, lifestyle photography, shallow depth of field --ar 4:3
+
+
+------------------------------------------------------------------
+6. 상담 신청 섹션 이미지
+[파일명] images/apply.jpg
+[비율] 1:1 (권장 1080x1080)
+[위치] 상담 신청 폼 왼쪽 (태블릿/모바일에서는 숨김)
+[PROMPT]
+Close-up of two hands across a light wooden table, one person gently writing notes while the other holds a warm cup of tea, a small vase with a single pastel flower, a soft pastel peach and mint background, minimal and clean composition, warm natural daylight, calm, safe and trustworthy mood, plenty of negative space, editorial lifestyle photography, shallow depth of field --ar 1:1
+
+
+------------------------------------------------------------------
+7. 후기 프로필 이미지 (작은 원형 썸네일)
+※ 실제 고객 사진 대신 일러스트 아바타 사용을 권장합니다.
+
+[파일명] images/review-1.jpg
+[비율] 1:1 (권장 200x200)
+[PROMPT]
+Minimal flat vector avatar illustration of a friendly Korean man in his 50s with short grey hair and a gentle smile, head and shoulders, simple shapes, soft pastel powder blue circular background, minimal and clean style, no text --ar 1:1
+
+[파일명] images/review-2.jpg
+[비율] 1:1 (권장 200x200)
+[PROMPT]
+Minimal flat vector avatar illustration of a warm Korean woman in her 40s with shoulder-length hair and a kind smile, head and shoulders, simple shapes, soft pastel peach circular background, minimal and clean style, no text --ar 1:1
+
+[파일명] images/review-3.jpg
+[비율] 1:1 (권장 200x200)
+[PROMPT]
+Minimal flat vector avatar illustration of a cheerful young Korean man in his 20s with neat short hair, head and shoulders, simple shapes, soft pastel butter yellow circular background, minimal and clean style, no text --ar 1:1
+
+
+------------------------------------------------------------------
+8. (선택) SNS 공유용 대표 이미지
+[파일명] images/og-image.jpg
+[비율] 1.91:1 (권장 1200x630)
+[위치] 카카오톡 · 페이스북 링크 공유 썸네일
+[PROMPT]
+Wide minimal banner illustration of soft overlapping pastel circles in mint, peach, powder blue, butter yellow and lavender, each containing a simple line icon (a heart, a coin, a house with family, a sun over a hill), large empty space on the left side for a title, minimal and clean flat design, calm and trustworthy mood, no text --ar 1.91:1
+
+==================================================================
