@@ -30,7 +30,7 @@
   .summary b { color: var(--text); }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
-  th { font-size: 12px; color: var(--muted); font-weight: 600; background: #fafbfc; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; background: #fafbfc; white-space: nowrap; }
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: var(--accent-weak); }
   td.code { font-family: Consolas, monospace; color: var(--muted); }
@@ -42,7 +42,21 @@
   mark { background: #fde68a; padding: 0 1px; }
   .empty { text-align: center; color: var(--muted); padding: 32px 0; }
   .hit { font-size: 12px; color: var(--muted); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  .docs-load { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+  .note { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .folder-btn { margin: 0; padding: 8px 14px; border-radius: 6px; background: var(--accent); color: #fff;
+    font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .progress { height: 6px; background: var(--line); border-radius: 3px; margin-top: 8px; overflow: hidden; max-width: 480px; }
+  .progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  table.docs td { vertical-align: top; }
+  .path { font-size: 12px; color: var(--muted); word-break: break-all; }
+  .snip { font-size: 13px; margin: 0 0 4px; }
+  .snip .pg { color: var(--accent); font-size: 12px; margin-right: 4px; white-space: nowrap; }
+  .warn { color: #b45309; font-size: 12px; }
   @media (max-width: 760px) {
+    .docs-load { flex-direction: column; align-items: stretch; text-align: left; }
+    table.docs th:nth-child(4), table.docs td:nth-child(4) { min-width: 180px; }
     form.search { grid-template-columns: 1fr; }
     th:nth-child(3), td:nth-child(3), th:nth-child(6), td:nth-child(6) { display: none; }
   }
@@ -89,8 +103,24 @@
     </form>
   </section>
 
+  <!-- 기초서류 PDF 폴더 불러오기 (PC 안에서만 처리, 업로드 없음) -->
+  <section class="panel docs-load">
+    <div>
+      <b>기초서류 PDF 폴더 연결</b>
+      <p class="note">사업방법서·약관·상품요약서 폴더를 선택하면 브라우저가 PC 안에서 본문을 읽어 위 검색에 포함합니다.
+        파일은 어디에도 업로드·저장되지 않으며, 창을 닫으면 사라집니다.</p>
+      <p class="note" id="docsStatus">연결된 폴더 없음</p>
+      <div class="progress" id="docsProgress" hidden><div id="docsBar"></div></div>
+    </div>
+    <label class="folder-btn">
+      폴더 선택
+      <input type="file" id="folderInput" webkitdirectory multiple hidden />
+    </label>
+  </section>
+
   <!-- 2. 결과 테이블 -->
   <section class="panel">
+    <h2>가상 상품 DB</h2>
     <p class="summary" id="summary"></p>
     <table>
       <thead>
@@ -99,9 +129,24 @@
       <tbody id="results"></tbody>
     </table>
   </section>
+
+  <!-- 기초서류 PDF 검색 결과 -->
+  <section class="panel" id="docsPanel" hidden>
+    <h2>기초서류(PDF) 검색 결과</h2>
+    <p class="summary" id="docsSummary"></p>
+    <table class="docs">
+      <thead>
+        <tr><th>판매개시일</th><th>문서유형</th><th>상품 / 파일</th><th>일치 내용</th><th></th></tr>
+      </thead>
+      <tbody id="docsResults"></tbody>
+    </table>
+  </section>
 </main>
 
 <script src="data.js"></script>
+<script src="lib/pdf.min.js"></script>
+<script src="lib/pdf.worker.min.js"></script>
+<script src="lib/cmaps-ko.js"></script>
 <script>
 // ---------- CSV 파싱 (따옴표 안의 쉼표·줄바꿈 처리) ----------
 function parseCSV(text) {
@@ -220,15 +265,21 @@ function render() {
   }).join("");
 }
 
+function renderAll() {
+  render();
+  if (typeof renderDocs === "function") renderDocs();
+}
+
 $("today").textContent = TODAY;
 [...new Set(DB.products.map(p => mainCategory(p.category)))].forEach(c => {
   $("category").insertAdjacentHTML("beforeend", `<option value="${esc(c)}">${esc(c)}</option>`);
 });
-$("searchForm").addEventListener("submit", e => { e.preventDefault(); render(); });
-["from", "to", "category", "status"].forEach(id => $(id).addEventListener("change", render));
-$("resetBtn").addEventListener("click", () => { $("searchForm").reset(); render(); });
+$("searchForm").addEventListener("submit", e => { e.preventDefault(); renderAll(); });
+["from", "to", "category", "status"].forEach(id => $(id).addEventListener("change", renderAll));
+$("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderAll(); });
 // 상세 카드는 다음 단계에서 추가 예정 (행 클릭 시 data-code 사용)
 render();
 </script>
+<script src="pdf-docs.js"></script>
 </body>
 </html>
