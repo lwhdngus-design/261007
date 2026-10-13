@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>상품 검증 기준자료 통합 검색</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --panel: #ffffff; --text: #1f2933; --muted: #6b7785;
+    --line: #dde3ea; --accent: #2563eb; --accent-weak: #e8f0fe;
+    --on: #15803d; --on-bg: #dcfce7; --off: #6b7280; --off-bg: #eceff3;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; font-size: 14px; }
+  header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  form.search { display: grid; grid-template-columns: 2fr 1.6fr 1fr 1fr auto; gap: 12px; align-items: end; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input, select, button { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; width: 100%; background: #fff; color: var(--text); }
+  .period { display: flex; gap: 6px; align-items: center; }
+  .period span { color: var(--muted); }
+  .buttons { display: flex; gap: 6px; }
+  button { cursor: pointer; width: auto; white-space: nowrap; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .summary { color: var(--muted); margin: 0 0 10px; }
+  .summary b { color: var(--text); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; background: #fafbfc; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--accent-weak); }
+  td.code { font-family: Consolas, monospace; color: var(--muted); }
+  td.num { text-align: center; }
+  .badge { display: inline-block; white-space: nowrap; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  .badge.on { color: var(--on); background: var(--on-bg); }
+  .badge.off { color: var(--off); background: var(--off-bg); }
+  .badge.plan { color: #b45309; background: #fef3c7; }
+  mark { background: #fde68a; padding: 0 1px; }
+  .empty { text-align: center; color: var(--muted); padding: 32px 0; }
+  .hit { font-size: 12px; color: var(--muted); }
+  @media (max-width: 760px) {
+    form.search { grid-template-columns: 1fr; }
+    th:nth-child(3), td:nth-child(3), th:nth-child(6), td:nth-child(6) { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>상품 검증 기준자료 통합 검색</h1>
+  <p>가상 데이터(가나다생명) 기반 PoC · 기준일 <span id="today"></span></p>
+</header>
+
+<main>
+  <!-- 1. 상단 검색 -->
+  <section class="panel">
+    <form class="search" id="searchForm">
+      <div>
+        <label for="keyword">키워드 (여러 단어는 AND)</label>
+        <input id="keyword" placeholder="예) 종신, 유사암, 저해지" autocomplete="off" />
+      </div>
+      <div>
+        <label>판매기간</label>
+        <div class="period">
+          <input type="date" id="from" aria-label="판매기간 From" />
+          <span>~</span>
+          <input type="date" id="to" aria-label="판매기간 To" />
+        </div>
+      </div>
+      <div>
+        <label for="category">상품분류</label>
+        <select id="category"><option value="">전체</option></select>
+      </div>
+      <div>
+        <label for="status">판매상태</label>
+        <select id="status">
+          <option value="">전체</option>
+          <option value="판매중">판매중</option>
+          <option value="판매종료">판매종료</option>
+        </select>
+      </div>
+      <div class="buttons">
+        <button type="submit" class="primary">검색</button>
+        <button type="button" id="resetBtn">초기화</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- 2. 결과 테이블 -->
+  <section class="panel">
+    <p class="summary" id="summary"></p>
+    <table>
+      <thead>
+        <tr><th>상품코드</th><th>상품명</th><th>분류</th><th>판매기간</th><th>판매상태</th><th>개정차수</th></tr>
+      </thead>
+      <tbody id="results"></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="data.js"></script>
+<script>
+// ---------- CSV 파싱 (따옴표 안의 쉼표·줄바꿈 처리) ----------
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') inQuotes = false;
+      else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); field = "";
+      if (row.some(v => v !== "")) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  const [header, ...body] = rows;
+  return body.map(r => Object.fromEntries(header.map((h, i) => [h, (r[i] ?? "").trim()])));
+}
+
+const DB = Object.fromEntries(Object.entries(window.CSV_DATA).map(([k, v]) => [k, parseCSV(v)]));
+
+// ---------- 업무 규칙 ----------
+const TODAY = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD (로컬 기준)
+
+// 판매상태: 판매중 = sale_start <= 오늘 AND (sale_end 빈값 OR sale_end >= 오늘)
+function saleStatus(p, today = TODAY) {
+  if (p.sale_start > today) return "판매예정";
+  if (!p.sale_end || p.sale_end >= today) return "판매중";
+  return "판매종료";
+}
+
+// 기간검색: sale_start <= To AND (sale_end 빈값 OR sale_end >= From)  — 빈 입력은 제한 없음
+function inPeriod(p, from, to) {
+  if (to && p.sale_start > to) return false;
+  if (from && p.sale_end && p.sale_end < from) return false;
+  return true;
+}
+
+const norm = s => (s || "").replace(/\s+/g, "").toLowerCase();
+
+// 상품별 검색 대상 텍스트(공백 제거): 상품명·주요특징·담보명·지급사유·문서제목·문서본문
+const searchIndex = DB.products.map(p => {
+  const covs = DB.coverages.filter(c => c.product_code === p.product_code);
+  const docs = DB.documents.filter(d => d.product_code === p.product_code);
+  return {
+    product: p,
+    name: norm(p.product_name),
+    all: norm([p.product_name, p.key_features,
+      ...covs.flatMap(c => [c.coverage_name, c.payment_reason]),
+      ...docs.flatMap(d => [d.title, d.content])].join(" "))
+  };
+});
+
+// 상품분류 드롭다운: 괄호 앞 대분류 기준 (예: "건강(간편심사)" → "건강"), 필터는 포함 일치
+const mainCategory = c => c.split("(")[0];
+
+function search({ keyword, from, to, category, status }) {
+  // 여러 단어는 공백으로 분리 → 각 단어도 공백 제거 → 모두 포함(AND)
+  const terms = keyword.trim().split(/\s+/).map(norm).filter(Boolean);
+  return searchIndex
+    .filter(x => terms.every(t => x.all.includes(t)))
+    .filter(x => inPeriod(x.product, from, to))
+    .filter(x => !category || x.product.category.includes(category))
+    .filter(x => !status || saleStatus(x.product) === status)
+    .map(x => ({ ...x, nameHit: terms.length > 0 && terms.every(t => x.name.includes(t)) }))
+    // 정렬: 상품명 일치 우선 → 판매개시일 최신순
+    .sort((a, b) => (b.nameHit - a.nameHit) || b.product.sale_start.localeCompare(a.product.sale_start));
+}
+
+// ---------- 화면 ----------
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+function highlight(text, terms) {
+  let html = esc(text);
+  for (const t of terms) {
+    if (!t) continue;
+    const re = new RegExp(t.split("").map(ch => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s*"), "gi");
+    html = html.replace(re, m => `<mark>${m}</mark>`);
+  }
+  return html;
+}
+
+function readForm() {
+  return { keyword: $("keyword").value, from: $("from").value, to: $("to").value,
+           category: $("category").value, status: $("status").value };
+}
+
+function render() {
+  const q = readForm();
+  const terms = q.keyword.trim().split(/\s+/).map(norm).filter(Boolean);
+  const rows = search(q);
+  $("summary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 전체 ${DB.products.length}건`;
+  if (!rows.length) {
+    $("results").innerHTML = `<tr><td colspan="6" class="empty">조건에 맞는 상품이 없습니다.</td></tr>`;
+    return;
+  }
+  $("results").innerHTML = rows.map(({ product: p, nameHit }) => {
+    const st = saleStatus(p);
+    const cls = st === "판매중" ? "on" : st === "판매종료" ? "off" : "plan";
+    const hitNote = terms.length && !nameHit ? `<div class="hit">담보·특징·문서에서 일치</div>` : "";
+    return `<tr data-code="${esc(p.product_code)}">
+      <td class="code">${esc(p.product_code)}</td>
+      <td>${highlight(p.product_name, terms)}${hitNote}</td>
+      <td>${esc(p.category)}</td>
+      <td>${esc(p.sale_start)} ~ ${esc(p.sale_end || "")}</td>
+      <td><span class="badge ${cls}">${st}</span></td>
+      <td class="num">${esc(p.revision_no)}차</td>
+    </tr>`;
+  }).join("");
+}
+
+$("today").textContent = TODAY;
+[...new Set(DB.products.map(p => mainCategory(p.category)))].forEach(c => {
+  $("category").insertAdjacentHTML("beforeend", `<option value="${esc(c)}">${esc(c)}</option>`);
+});
+$("searchForm").addEventListener("submit", e => { e.preventDefault(); render(); });
+["from", "to", "category", "status"].forEach(id => $(id).addEventListener("change", render));
+$("resetBtn").addEventListener("click", () => { $("searchForm").reset(); render(); });
+// 상세 카드는 다음 단계에서 추가 예정 (행 클릭 시 data-code 사용)
+render();
+</script>
+</body>
+</html>
