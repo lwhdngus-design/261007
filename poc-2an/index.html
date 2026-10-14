@@ -65,6 +65,9 @@
   .tries { display: flex; flex-wrap: wrap; gap: 8px; }
   .tries button { padding: 9px 14px; white-space: normal; text-align: left; }
   .ok-text { color: var(--accent); }
+  table.checks tbody tr { cursor: default; }
+  table.checks tr.fail td { background: #fff7e6; }
+  table.checks td:last-child { text-align: center; white-space: nowrap; }
   .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 60;
     background: #1f2a2e; color: #fff; padding: 12px 18px; max-width: min(560px, calc(100vw - 32px)); font-size: 14px; line-height: 1.5; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
   .db-detail { margin-top: 26px; padding-top: 6px; }
@@ -628,6 +631,19 @@ python hanalife_download.py                ← 판매 + 판매중지 전체</pre
         </section>
       </div>
     </li>
+    <li id="selfCheck">
+      <div class="proc-no">STEP 6</div>
+      <div class="proc-body">
+        <h2>자동 검증</h2>
+        <p>기획서 요구사항별 완료 기준을 가상 샘플로 실행해 <b>기대값과 실제값</b>을 비교합니다. 웹 데모에서는 샘플을 다 읽으면 자동으로 실행됩니다.</p>
+        <div class="buttons" style="margin-bottom:10px"><button type="button" class="primary" id="runCheckBtn">검증 실행</button></div>
+        <p class="summary" id="checkSummary">아직 실행하지 않았습니다.</p>
+        <div class="table-scroll" id="checkTable" hidden><table class="checks">
+          <thead><tr><th>기획서 요구</th><th>검증 항목</th><th>기대값</th><th>실제값</th><th>결과</th></tr></thead>
+          <tbody id="checkBody"></tbody>
+        </table></div>
+      </div>
+    </li>
   </ol>
 </div>
 
@@ -802,6 +818,7 @@ $("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderA
 <script src="catalog.js"></script>
 <script src="layout.js"></script>
 <script src="product-db.js"></script>
+<script src="selfcheck.js"></script>
 <script>renderAll();</script>
 </body>
 </html>
