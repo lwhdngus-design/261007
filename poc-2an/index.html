@@ -25,21 +25,56 @@
   .util .hl { color: var(--accent); font-weight: 700; }
   .gnb-row { display: flex; align-items: center; gap: 40px; padding: 10px 0 18px; flex-wrap: wrap; }
   .logo { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--accent); }
-  .logo-mark { width: 34px; height: 34px; border-radius: 8px; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 17px; }
   .logo-text { font-size: 22px; font-weight: 800; letter-spacing: -.04em; line-height: 1.15; }
-  .logo-text small { display: block; font-size: 11px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
   .gnb { display: flex; gap: 34px; margin-left: auto; flex-wrap: wrap; }
   .gnb a { font-size: 18px; font-weight: 700; text-decoration: none; color: #222; padding: 4px 0; }
   .gnb a:hover { color: var(--accent); }
   .gnb a.off { color: #b8bcbc; pointer-events: none; }
+  .gnb a.cur { color: var(--accent); box-shadow: inset 0 -3px 0 var(--accent); }
+  .gnb .dot { display: inline-block; margin-right: 6px; vertical-align: 3px; }
+  .logo-text { font-size: 24px; }
+
+  /* ---- 기초서류 연결 · 교육용 실습 화면 ---- */
+  .page { padding-top: 34px; padding-bottom: 60px; }
+  .page[hidden], .app[hidden] { display: none; }
+  .cgrid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+  .cbox { border-top: 2px solid var(--accent); border-bottom: 1px solid var(--line); padding: 18px 4px 20px; }
+  .cbox h2 { font-size: 20px; margin: 0 0 14px; }
+  .cbox h3 { font-size: 15px; margin: 18px 0 8px; }
+  table.kv { border-top: 1px solid var(--line-2); margin-bottom: 14px; }
+  table.kv th { width: 110px; background: var(--label-bg); text-align: left; font-size: 14px; font-weight: 600; }
+  table.kv td { word-break: break-all; }
+  table.kv tbody tr { cursor: default; }
+  table.kv tbody tr:hover { background: none; }
+  .cact { flex-wrap: wrap; margin-bottom: 10px; }
+  .cact .folder-btn { border: 1px solid var(--line-2); padding: 8px 12px; cursor: pointer; margin: 0; color: #333; font-size: 14px; }
+  .cact .folder-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .steps { margin: 0; padding-left: 20px; line-height: 1.7; }
+  .steps li { margin-bottom: 6px; }
+  pre.tree, pre.cmd { background: var(--label-bg); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; line-height: 1.6; overflow-x: auto; margin: 8px 0; font-family: Consolas, "D2Coding", monospace; }
+  pre.cmd { background: #1f2a2e; color: #e8f3f2; border-color: #1f2a2e; }
+  .proc { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--accent); }
+  .proc > li { display: grid; grid-template-columns: 130px minmax(0, 1fr); border-bottom: 1px solid var(--line); }
+  .proc-no { background: var(--label-bg); border-right: 1px solid var(--line); color: var(--accent); font-weight: 800; padding: 20px 18px; font-size: 15px; letter-spacing: .02em; }
+  .proc-body { padding: 18px 22px 22px; min-width: 0; }
+  .proc-body h2 { font-size: 19px; margin: 0 0 8px; }
+  .proc-body p { margin: 0 0 8px; line-height: 1.65; }
+  table.dl td:last-child { white-space: nowrap; text-align: center; width: 150px; }
+  table.dl td:first-child { font-weight: 600; white-space: nowrap; }
+  table.dl tbody tr { cursor: default; }
+  .tries { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tries button { padding: 9px 14px; white-space: normal; text-align: left; }
+  .ok-text { color: var(--accent); }
+  #viewEdu .db-panel { margin: 12px 0 0; border: 0; padding: 0; }
+  #viewEdu .db-panel > h2 { font-size: 16px; }
 
   .app { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 72px; padding-top: 18px; padding-bottom: 60px; }
   .crumb { text-align: right; font-size: 13px; color: var(--muted); margin-bottom: 20px; }
   .crumb b { color: #222; }
 
   /* ---- 왼쪽 메뉴 ---- */
-  .side { padding-top: 38px; }
-  .side-title { font-size: 30px; font-weight: 700; margin: 0; padding-bottom: 22px; border-bottom: 2px solid var(--accent); letter-spacing: -.04em; }
+  .side { padding-top: 46px; }
+  .side .side-card:first-child { border-top: 2px solid var(--accent); }
   .side-card { border-bottom: 1px solid var(--line); padding: 14px 6px; display: grid; gap: 8px; }
   .side-card h2 { margin: 0; font-size: 17px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
   .side-card.open h2 { color: var(--accent); font-weight: 700; }
@@ -223,9 +258,11 @@
   .db-panel h2 small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
   @media (max-width: 1100px) { .app { gap: 36px; } .gnb { gap: 22px; } .gnb a { font-size: 16px; } }
   @media (max-width: 960px) {
+    .cgrid { grid-template-columns: minmax(0, 1fr); }
+    .proc > li { grid-template-columns: minmax(0, 1fr); }
+    .proc-no { border-right: 0; padding: 10px 14px; }
     .app { grid-template-columns: 1fr; gap: 0; }
     .side { padding-top: 0; order: 2; }
-    .side-title { font-size: 22px; padding-bottom: 12px; }
     .gnb { margin-left: 0; width: 100%; overflow-x: auto; }
     .crumb { display: none; }
     .page-title { font-size: 26px; }
@@ -253,37 +290,24 @@
 <!-- 상단 제목줄 -->
 <header class="topbar">
   <div class="wrap">
-    <div class="util"><span>기준일 <b id="today"></b></span><span>내 PC에서만 동작 · 외부 전송 없음</span><span>화면 버전 <b id="appVersion">2026-10-14 공시실형</b></span><span class="hl">기초서류 · 계리 검증</span></div>
+    <div class="util"><span>기준일 <b id="today"></b></span><span>내 PC에서만 동작 · 외부 전송 없음</span></div>
     <div class="gnb-row">
-      <a class="logo" href="#top" id="top"><span class="logo-mark">검</span><span class="logo-text">상품 검증 기준자료 통합 검색<small>사업방법서 · 상품요약서 · 약관</small></span></a>
-      <nav class="gnb" aria-label="바로가기">
-        <a href="#searchPanel">기초서류 검색</a>
-        <a href="#catalogPanel">상품 목록</a>
-        <a href="#analysisPanel" data-needs="analysisPanel">상품 분석</a>
-        <a href="#comparePanel" data-needs="comparePanel">상품 비교</a>
+      <a class="logo" href="#" data-view="home" data-target="top"><span class="logo-text">상품 검증 기준자료 통합 검색</span></a>
+      <nav class="gnb" aria-label="메뉴">
+        <a href="#" data-view="home" data-target="searchPanel">기초서류 검색</a>
+        <a href="#" data-view="home" data-target="catalogPanel">상품 목록</a>
+        <a href="#" data-view="home" data-target="analysisPanel" data-needs="analysisPanel">상품 분석</a>
+        <a href="#" data-view="home" data-target="comparePanel" data-needs="comparePanel">상품 비교</a>
+        <a href="#" data-view="connect"><span class="dot" id="docsDot"></span>기초서류 연결</a>
+        <a href="#" data-view="edu">교육용 실습</a>
       </nav>
     </div>
   </div>
 </header>
 
-<div class="wrap app">
-  <!-- 왼쪽 메뉴: 기초서류 연결 · 특징 바로 찾기 · 보기 설정 -->
+<div class="wrap app" id="viewHome" data-page="home">
+  <!-- 왼쪽 메뉴: 특징 바로 찾기 -->
   <aside class="side">
-    <h2 class="side-title">검증자료실</h2>
-
-    <section class="side-card docs-load">
-      <h2><span class="dot" id="docsDot"></span>기초서류 연결</h2>
-      <p class="note" id="serverMode" hidden>폴더 <b id="docsFolder"></b></p>
-      <p class="note" id="docsStatus">연결된 폴더 없음 — start.bat으로 실행하면 지정 폴더가 자동 연결됩니다</p>
-      <div class="progress" id="docsProgress" hidden><div id="docsBar"></div></div>
-      <div class="side-actions">
-        <button type="button" id="reloadDocsBtn" hidden>새로고침</button>
-        <label class="folder-btn">폴더 선택<input type="file" id="folderInput" webkitdirectory multiple hidden /></label>
-      </div>
-      <p class="note" id="docsNote">사업방법서·약관·상품요약서 폴더를 선택하면 브라우저가 PC 안에서 본문을 읽어 검색에 포함합니다.
-        파일은 어디에도 업로드·저장되지 않으며, 창을 닫으면 사라집니다.</p>
-    </section>
-
     <section class="side-card open">
       <h2>특징 바로 찾기</h2>
       <div class="sub">
@@ -291,15 +315,10 @@
         <p class="note sub-note">특징은 features.csv에 한 줄씩 추가합니다.</p>
       </div>
     </section>
-
-    <section class="side-card">
-      <h2>보기 설정</h2>
-      <label class="switch"><input type="checkbox" id="dbToggle" /> 교육용 가상 상품 DB 표시</label>
-    </section>
   </aside>
 
 <main>
-  <div class="crumb">홈 &gt; 검증자료실 &gt; <b>상품 검증 기준자료 통합 검색</b></div>
+  <div class="crumb">홈 &gt; <b>기초서류 검색</b></div>
   <h1 class="page-title">상품 검증 기준자료 통합 검색</h1>
   <p class="page-desc">공시실에서 내려받은 사업방법서·상품요약서·약관을 내 PC 폴더에서 읽어, 상품별 특징과 판매일자(개정)별 내용을 원문 그대로 찾고 비교합니다.
     키워드나 "제1납입기간과 제2납입기간이 구분된 종신보험이 뭐였지?" 같은 질문으로 검색할 수 있습니다.</p>
@@ -358,17 +377,6 @@
     </table></div>
   </section>
 
-  <!-- 교육용 가상 상품 DB (보기 설정에서 켤 때만) -->
-  <section class="panel db-panel" id="dbPanel" hidden>
-    <h2>가상 상품 DB <small>교육용 · 가나다생명</small></h2>
-    <p class="summary" id="summary"></p>
-    <div class="table-scroll"><table>
-      <thead>
-        <tr><th>상품코드</th><th>상품명</th><th>분류</th><th>판매기간</th><th>판매상태</th><th>개정차수</th></tr>
-      </thead>
-      <tbody id="results"></tbody>
-    </table></div>
-  </section>
 
   <!-- 상품 분석: 핵심 특징 표 -->
   <section class="panel" id="analysisPanel" hidden>
@@ -427,6 +435,119 @@
     <div id="catalogBody"></div>
   </section>
 </main>
+</div>
+
+<!-- 기초서류 연결 화면 -->
+<div class="wrap page" id="viewConnect" data-page="connect" hidden>
+  <h1 class="page-title">기초서류 연결</h1>
+  <p class="page-desc">공시실에서 내려받은 사업방법서·상품요약서·약관 PDF 폴더를 연결합니다. 문서는 내 PC 안에서만 읽고, 외부로는 아무것도 보내지 않습니다.</p>
+  <div class="cgrid">
+    <section class="cbox">
+      <h2>현재 연결 상태</h2>
+      <table class="kv"><tbody>
+        <tr><th>폴더</th><td><span id="serverMode" hidden><b id="docsFolder"></b></span><span id="noFolder">—</span></td></tr>
+        <tr><th>상태</th><td><span id="docsStatus">연결된 폴더 없음 — start.bat으로 실행하면 지정 폴더가 자동 연결됩니다</span>
+          <div class="progress" id="docsProgress" hidden><div id="docsBar"></div></div></td></tr>
+        <tr><th>불러온 문서</th><td id="connectStats">—</td></tr>
+      </tbody></table>
+      <div class="buttons cact">
+        <button type="button" id="reloadDocsBtn" class="primary" hidden>새로고침 (추가·수정된 파일 다시 읽기)</button>
+        <label class="folder-btn">폴더 선택<input type="file" id="folderInput" webkitdirectory multiple hidden /></label>
+      </div>
+      <p class="note" id="docsNote">사업방법서·약관·상품요약서 폴더를 선택하면 브라우저가 PC 안에서 본문을 읽어 검색에 포함합니다.
+        파일은 어디에도 업로드·저장되지 않으며, 창을 닫으면 사라집니다.</p>
+    </section>
+    <section class="cbox">
+      <h2>연결 방법</h2>
+      <ol class="steps">
+        <li><b>start.bat</b> 더블클릭 — 처음 한 번 PDF 폴더 경로를 물어보고, 다음부터는 그 폴더를 자동으로 연결합니다.</li>
+        <li><b>change-folder.bat</b> — 다른 폴더로 바꿀 때. 폴더별 색인은 따로 보관되어 예전 폴더로 돌아가도 다시 읽지 않습니다.</li>
+        <li><b>새로고침</b> — 폴더에 PDF를 추가·수정한 뒤 누르면 바뀐 파일만 다시 읽습니다.</li>
+        <li><b>폴더 선택</b> — index.html을 더블클릭해 연 경우에만 사용(창을 닫으면 다시 선택).</li>
+      </ol>
+      <h3>폴더 구성 예</h3>
+<pre class="tree">기초서류폴더
+├─ 2023.01.01            ← 판매개시일 (폴더명)
+│   ├─ (무)OO종신보험_사업방법서.pdf
+│   ├─ (무)OO종신보험_상품요약서.pdf
+│   └─ (무)OO종신보험_약관.pdf
+└─ 2025.01.01 ~ 2025.12.31   ← 판매종료일까지 쓰면 판매상태에 반영</pre>
+      <p class="note">파일명에 상품명과 문서유형(사업방법서·상품요약서·약관)이 들어 있으면 상품별로 자동으로 묶입니다. "계약자용"은 같은 상품으로 봅니다.</p>
+    </section>
+  </div>
+</div>
+
+<!-- 교육용 실습 화면 -->
+<div class="wrap page" id="viewEdu" data-page="edu" hidden>
+  <h1 class="page-title">교육용 실습</h1>
+  <p class="page-desc">실제 회사 자료 없이, 가상 보험사 <b>'가나다생명'</b>의 기초서류 PDF와 상품 DB로 앱의 모든 기능을 따라 해 볼 수 있습니다.
+    모든 자료는 교육용으로 만든 가상 데이터입니다.</p>
+
+  <ol class="proc">
+    <li>
+      <div class="proc-no">STEP 1</div>
+      <div class="proc-body">
+        <h2>앱 받기</h2>
+        <p>Git으로 받거나, 깃허브 화면에서 브랜치를 고른 뒤 Code → Download ZIP으로 받아 압축을 풉니다. 이미 받았다면 <b>update.bat</b>으로 최신 버전을 받습니다.</p>
+        <pre class="cmd">git clone -b claude/excel-2an-sheet-format-svwm4c https://github.com/lwhdngus-design/261007.git</pre>
+        <p class="note">필요한 프로그램: Python 3 (추가 설치 패키지 없음), Chrome 권장</p>
+      </div>
+    </li>
+    <li>
+      <div class="proc-no">STEP 2</div>
+      <div class="proc-body">
+        <h2>교육용 자료 내려받기</h2>
+        <table class="dl"><thead><tr><th>자료</th><th>내용</th><th>내려받기</th></tr></thead><tbody>
+          <tr><td>가상 기초서류 PDF</td><td>가나다생명 5개 상품 · 판매일자별 사업방법서·상품요약서·약관 <span id="sampleCount"></span></td>
+            <td><button type="button" class="mini" id="sampleZipBtn">ZIP 내려받기</button><div class="note" id="sampleZipNote"></div></td></tr>
+          <tr><td>가상 상품 DB</td><td>상품 목록 (상품코드·판매기간·개정차수·예정이율 등)</td><td><button type="button" class="mini" data-csv="products">products.csv</button></td></tr>
+          <tr><td></td><td>보장 내역 (지급사유·지급률·감액·면책기간)</td><td><button type="button" class="mini" data-csv="coverages">coverages.csv</button></td></tr>
+          <tr><td></td><td>상품위원회 등 심의 문서</td><td><button type="button" class="mini" data-csv="documents">documents.csv</button></td></tr>
+          <tr><td></td><td>월별 보유계약 현황</td><td><button type="button" class="mini" data-csv="portfolio">portfolio.csv</button></td></tr>
+          <tr><td>특징 사전</td><td>질문 검색·특징 판정 규칙 (한 줄 = 특징 하나)</td><td><button type="button" class="mini" data-csv="features">features.csv</button></td></tr>
+        </tbody></table>
+        <p class="note">같은 자료가 앱 폴더 안 <b>sample-기초서류폴더</b>, <b>dummy-data</b>에도 들어 있습니다. CSV는 엑셀에서 바로 열립니다.</p>
+      </div>
+    </li>
+    <li>
+      <div class="proc-no">STEP 3</div>
+      <div class="proc-body">
+        <h2>샘플로 실행</h2>
+        <p><b>start-sample.bat</b> 더블클릭 → 가상 기초서류로 앱이 열립니다. 내 기초서류 폴더 설정은 바뀌지 않으며, 회사 문서로 돌아갈 때는 <b>start.bat</b>으로 실행합니다.</p>
+        <p class="note" id="sampleModeNote"></p>
+      </div>
+    </li>
+    <li>
+      <div class="proc-no">STEP 4</div>
+      <div class="proc-body">
+        <h2>따라 해 보기</h2>
+        <p>누르면 기초서류 검색 화면에서 바로 실행됩니다.</p>
+        <div class="tries">
+          <button type="button" data-try="유지보너스">① 키워드 검색: 유지보너스</button>
+          <button type="button" data-try="제1납입기간과 제2납입기간이 구분된 종신보험이 뭐였지?">② 질문 검색: 제1·제2납입기간이 구분된 종신보험</button>
+          <button type="button" data-try="2023년 판매중인 저해지형 종신보험">③ 조건 섞기: 2023년 판매중 저해지형 종신</button>
+          <button type="button" data-try="">④ 상품 목록에서 [분석] → [비교 담기]로 개정 전후 비교</button>
+        </div>
+      </div>
+    </li>
+    <li>
+      <div class="proc-no">STEP 5</div>
+      <div class="proc-body">
+        <h2>가상 상품 DB 살펴보기</h2>
+        <p>STEP 2의 products.csv 내용입니다. 기초서류 검색 화면의 판매기간·분류·판매상태 조건이 함께 적용됩니다.</p>
+        <section class="panel db-panel" id="dbPanel">
+          <h2>가상 상품 DB <small>교육용 · 가나다생명</small></h2>
+          <p class="summary" id="summary"></p>
+          <div class="table-scroll"><table>
+            <thead>
+              <tr><th>상품코드</th><th>상품명</th><th>분류</th><th>판매기간</th><th>판매상태</th><th>개정차수</th></tr>
+            </thead>
+            <tbody id="results"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </li>
+  </ol>
 </div>
 
 <!-- 표 크게 보기 -->

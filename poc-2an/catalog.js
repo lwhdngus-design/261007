@@ -79,8 +79,8 @@ const stBadge = st => `<span class="badge ${st === "판매중" ? "on" : st === "
 function renderCatalog() {
   if (!DOCS.length) {
     $("catalogBody").innerHTML = `<div class="empty-state"><b>기초서류 폴더가 아직 연결되지 않았습니다</b>
-      start.bat으로 실행하면 지정 폴더가 자동으로 연결되고, 그렇지 않으면 왼쪽 <b style="display:inline">기초서류 연결 → 폴더 선택</b>으로 고릅니다.<br>
-      <button type="button" id="emptyDbBtn">교육용 가상 상품 DB 보기</button></div>`;
+      start.bat으로 실행하면 지정 폴더가 자동으로 연결되고, 그렇지 않으면 상단 <b style="display:inline">기초서류 연결 → 폴더 선택</b>으로 고릅니다.<br>
+      <button type="button" id="emptyDbBtn">교육용 실습 (가상 샘플로 해 보기)</button></div>`;
     return;
   }
   CATALOG = buildCatalog();

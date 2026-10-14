@@ -241,6 +241,7 @@ async function loadFromServer() {
 
 if (SERVER_MODE) {
   $("serverMode").hidden = false;
+  $("noFolder").hidden = true;
   $("reloadDocsBtn").hidden = false;
   $("docsNote").textContent = "start.bat으로 실행 중 — 지정 폴더를 자동으로 읽어 내 PC의 검색 색인(앱 폴더 .docs-cache)에 저장합니다. " +
     "다음 실행부터는 새로 추가·수정된 파일만 읽습니다. 외부로는 아무것도 전송되지 않습니다.";

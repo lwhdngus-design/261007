@@ -27,6 +27,7 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG = APP_DIR / "docs-folder.txt"
+SAMPLE_DIR = "sample-기초서류폴더"  # 교육용 가상 기초서류 (가나다생명)
 CACHE_DIR = APP_DIR / ".docs-cache"
 DB_PATH = CACHE_DIR / "index.db"
 FEATURES_CSV = APP_DIR / "dummy-data" / "features.csv"
@@ -433,13 +434,15 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 def main():
     ap = argparse.ArgumentParser(description="기초서류 폴더 자동 연결 실행기")
     ap.add_argument("--folder", help="기초서류 PDF 폴더 경로 (한 번 지정하면 저장됨)")
+    ap.add_argument("--sample", action="store_true",
+                    help="교육용 가상 샘플 폴더(sample-기초서류폴더)로 실행 (저장된 폴더 설정은 바꾸지 않음)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--browser", choices=["chrome", "default"], default="chrome",
                     help="열 브라우저: chrome(기본, 없으면 기본 브라우저) / default(Windows 기본 브라우저)")
     args = ap.parse_args()
 
-    root = docs_root(args.folder)
+    root = (APP_DIR / SAMPLE_DIR).resolve() if args.sample else docs_root(args.folder)
     init_db()
     import_json_cache()
     ensure_tags()
