@@ -80,6 +80,26 @@
   .ref { color: var(--accent); font-size: 12px; white-space: nowrap; }
   .na { color: var(--muted); }
   .check { color: #b45309; }
+  .inline { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--text); font-size: 13px; }
+  .inline input { width: auto; }
+  .tray { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--panel); border-top: 2px solid var(--accent);
+    box-shadow: 0 -4px 12px rgba(0,0,0,.08); padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .tray[hidden] { display: none; }
+  #trayItems { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; align-items: center; }
+  body:has(#compareTray:not([hidden])) main { padding-bottom: 90px; }
+  .table-scroll { overflow-x: auto; }
+  table.compare td:first-child { width: 100px; }
+  table.compare td:last-child { width: 90px; font-size: 12px; }
+  table.compare td { min-width: 200px; }
+  table.compare td:first-child, table.compare td:last-child { min-width: 0; }
+  tr.cmp-diff td:first-child { color: #b45309; }
+  tr.cmp-diff { background: #fffbeb; }
+  #compareBody h4 { font-size: 13px; margin: 14px 0 4px; }
+  .difflist { list-style: none; padding-left: 0; margin: 4px 0; }
+  .difflist li { padding: 4px 8px; border-left: 3px solid var(--line); margin-bottom: 4px; font-size: 13px; }
+  .difflist li.add { border-color: var(--on); background: var(--on-bg); }
+  .difflist li.del { border-color: #dc2626; background: #fee2e2; }
+  .difflist li.chg { border-color: #b45309; background: #fef3c7; }
   @media (max-width: 760px) {
     table.facts td:last-child { display: none; }
     .docs-load { flex-direction: column; align-items: stretch; text-align: left; }
@@ -162,11 +182,27 @@
       <div class="buttons">
         <select id="analysisVersion" aria-label="판매일자"></select>
         <button type="button" id="copyMdBtn">결과 복사</button>
+        <button type="button" id="addCompareBtn">비교에 추가</button>
+        <button type="button" id="prevVersionBtn">이전 판매일자와 비교</button>
         <button type="button" id="copyPromptBtn">AI용 프롬프트 복사</button>
         <button type="button" id="closeAnalysisBtn">닫기</button>
       </div>
     </div>
     <div id="analysisBody"></div>
+  </section>
+
+  <!-- 2단계: 상품 비교 · 개정 전후 비교 -->
+  <section class="panel" id="comparePanel" hidden>
+    <div class="analysis-head">
+      <h2 id="compareTitle">상품 비교</h2>
+      <div class="buttons">
+        <label class="inline"><input type="checkbox" id="onlyDiff" /> 다른 항목만</label>
+        <button type="button" id="copyCompareBtn">마크다운 복사</button>
+        <button type="button" id="csvCompareBtn">엑셀 저장(CSV)</button>
+        <button type="button" id="closeCompareBtn">닫기</button>
+      </div>
+    </div>
+    <div id="compareBody"></div>
   </section>
 
   <!-- 2. 결과 테이블 -->
@@ -193,6 +229,16 @@
     </table>
   </section>
 </main>
+
+<!-- 비교함 (화면 아래 고정) -->
+<div class="tray" id="compareTray" hidden>
+  <b>비교함</b>
+  <div id="trayItems"></div>
+  <div class="buttons">
+    <button type="button" class="primary" id="compareBtn" disabled>비교하기</button>
+    <button type="button" id="clearTrayBtn">비우기</button>
+  </div>
+</div>
 
 <script src="data.js"></script>
 <script src="lib/pdf.min.js"></script>
@@ -342,6 +388,7 @@ $("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderA
 <script src="pdf-docs.js"></script>
 <script src="question.js"></script>
 <script src="analysis.js"></script>
+<script src="compare.js"></script>
 <script>renderAll();</script>
 </body>
 </html>
