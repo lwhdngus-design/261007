@@ -188,7 +188,9 @@ async function loadFolder(fileList) {
 
 // 방법 2) 자동 연결 — start.bat(serve.py)로 연 경우. 지정 폴더 목록을 받아 오고,
 // 색인이 안 된 PDF만 브라우저가 읽어서 내 PC의 검색 색인(.docs-cache/index.db)에 저장
-const SERVER_MODE = location.protocol.startsWith("http");
+// 웹 데모(교육자료 링크 등 내 PC가 아닌 주소로 연 경우): 서버 없이 가상 샘플 PDF를 브라우저에서 바로 읽음
+const DEMO_MODE = location.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+const SERVER_MODE = location.protocol.startsWith("http") && !DEMO_MODE;
 
 async function api(path, body) {
   const res = await fetch(path, body === undefined ? { cache: "no-store" }
@@ -258,6 +260,30 @@ if (SERVER_MODE) {
   const run = () => loadFromServer().catch(err => { indexing = false; $("docsStatus").textContent = "자동 연결 실패: " + err.message; });
   $("reloadDocsBtn").addEventListener("click", run);
   run();
+}
+
+// 방법 3) 웹 데모 — 앱과 함께 올린 가상 샘플(sample-기초서류폴더)을 읽음. 외부로 보내는 것은 없음
+async function loadDemo() {
+  const list = window.SAMPLE_FILES || [];
+  resetDocs();
+  for (let i = 0; i < list.length; i++) {
+    const url = list[i].split("/").map(encodeURIComponent).join("/");
+    const doc = makeDoc(list[i], { url });
+    progress(i, list.length, doc.path);
+    await readPages(doc, async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return new Uint8Array(await res.arrayBuffer());
+    });
+    DOCS.push(doc);
+  }
+  finishLoading("웹 데모: 가상 샘플(가나다생명)");
+}
+
+if (DEMO_MODE) {
+  $("noFolder").textContent = "가상 샘플 (웹 데모)";
+  $("docsNote").textContent = "웹 데모 — 교육용 가상 샘플 PDF를 브라우저에서 바로 읽습니다. 내 PC의 기초서류 폴더 연결은 start.bat으로 실행한 앱에서 합니다.";
+  loadDemo().catch(err => { $("docsStatus").textContent = "샘플 읽기 실패: " + err.message; });
 }
 
 // ---------- 검색 ----------
@@ -384,6 +410,7 @@ const productKeyOf = d => d.productKey || norm(d.name);
 // PDF 열기: 메모리의 파일을 새 탭으로 (일치한 페이지로 이동). 결과·답변·분석 화면 공통
 function openDoc(index, page) {
   const d = DOCS[index];
+  if (DEMO_MODE) { showDocPage(d, +page || 1); return; } // 웹 데모는 새 창을 못 열어 화면 안에 그 쪽을 그림으로 보여 줌
   d.url ||= URL.createObjectURL(d.file); // 서버 모드는 처음부터 docs/... 주소가 있음
   window.open(`${d.url}#page=${page || 1}`, "_blank");
 }

@@ -93,7 +93,9 @@ function renderEduInfo() {
   $("sampleModeNote").innerHTML = folder.replace(/\\/g, "/").endsWith(SAMPLE_FOLDER)
     ? `<b class="ok-text">지금 가상 샘플로 실행 중입니다.</b> 상단 [기초서류 검색]·[상품 목록]에서 바로 실습하세요.`
     : SERVER_MODE ? `지금은 내 기초서류 폴더로 실행 중입니다${folder ? ` (${esc(folder)})` : ""}.` : "";
-  if (!SERVER_MODE) $("sampleZipNote").textContent = "start.bat / start-sample.bat으로 실행했을 때 내려받을 수 있습니다";
+  if (DEMO_MODE) $("sampleZipNote").textContent = "웹 데모에서는 저장이 막혀 있음";
+  if (DEMO_MODE) $("sampleModeNote").innerHTML = `<b class="ok-text">지금 웹 데모로 실행 중입니다.</b> 가상 샘플이 이미 연결되어 있어 상단 [기초서류 검색]·[상품 목록]에서 바로 실습할 수 있습니다.`;
+  if (!SERVER_MODE && !DEMO_MODE) $("sampleZipNote").textContent = "start.bat / start-sample.bat으로 실행했을 때 내려받을 수 있습니다";
 }
 
 // CSV: 엑셀에서 한글이 깨지지 않도록 BOM을 붙여 저장
@@ -139,6 +141,7 @@ function makeZip(entries) {
 
 $("sampleZipBtn").addEventListener("click", async () => {
   const btn = $("sampleZipBtn"), note = $("sampleZipNote");
+  if (DEMO_MODE) { demoNotice("웹 데모에서는 파일 저장이 막혀 있습니다. 앱 폴더의 sample-기초서류폴더에 같은 PDF가 들어 있습니다."); return; }
   if (!SERVER_MODE) { note.textContent = "start.bat / start-sample.bat으로 실행했을 때 내려받을 수 있습니다"; return; }
   btn.disabled = true;
   try {
@@ -180,5 +183,46 @@ document.addEventListener("click", e => {
   if (!e.target.closest("#emptyDbBtn")) return;
   showView("edu");
 });
+
+// ---------- 웹 데모 ----------
+// 교육자료 링크로 연 웹 데모는 파일 내려받기와 새 창 열기가 막혀 있어, 안내를 띄우고 PDF 쪽은 화면 안에서 보여 줌
+function demoNotice(msg) {
+  let t = $("demoToast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "demoToast"; t.className = "toast"; t.setAttribute("role", "status");
+    document.body.appendChild(t);
+  }
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(demoNotice.timer);
+  demoNotice.timer = setTimeout(() => { t.hidden = true; }, 4000);
+}
+
+async function showDocPage(d, page) {
+  $("modalTitle").textContent = `${d.productName || d.name} · ${d.docType} p.${page}`;
+  $("modalBody").style.gridTemplateColumns = "minmax(300px, 1fr)";
+  $("modalBody").innerHTML = `<p class="note">${esc(d.docType)} p.${page} 그리는 중…</p>`;
+  $("imgModal").hidden = false;
+  try {
+    const pdf = await openPdf(d);
+    const n = Math.min(Math.max(1, page), pdf.numPages);
+    const pg = await pdf.getPage(n);
+    const vp = pg.getViewport({ scale: 1.6 });
+    const cv = document.createElement("canvas");
+    cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+    await pg.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+    const nav = (p, label) => p >= 1 && p <= pdf.numPages ? `<button type="button" class="mini" data-open="${DOCS.indexOf(d)}" data-page="${p}">${label}</button>` : "";
+    $("modalBody").innerHTML = `<div class="modal-col"><div class="buttons" style="margin-bottom:8px">${nav(n - 1, "이전 쪽")}${nav(n + 1, "다음 쪽")}
+      <span class="note">${n} / ${pdf.numPages}쪽 · ${esc(d.path)}</span></div><img src="${cv.toDataURL("image/jpeg", 0.88)}" alt="${esc(d.docType)} p.${n}"></div>`;
+  } catch (err) {
+    $("modalBody").innerHTML = `<p class="warn">PDF를 그리지 못했습니다: ${esc(err.message)}</p>`;
+  }
+}
+
+if (DEMO_MODE) {
+  document.querySelector(".util").insertAdjacentHTML("beforeend", `<span class="hl">웹 데모 · 가상 데이터</span>`);
+  // compare.js의 download(엑셀·CSV 저장)를 안내로 바꿈
+  download = name => demoNotice(`웹 데모에서는 파일 저장(${name})이 막혀 있습니다. 내 PC에서 start-sample.bat으로 실행한 앱에서 저장할 수 있습니다.`);
+}
 
 renderEduInfo();
