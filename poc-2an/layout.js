@@ -1,4 +1,4 @@
-// 화면 배치 보조 — 상단 메뉴 화면 전환(검색 · 기초서류 연결 · 교육용 실습), 특징 바로 찾기 메뉴,
+// 화면 배치 보조 — 상단 메뉴 화면 전환(검색 · 기초서류 연결 · 교육용 실습),
 // 상품 목록 판매상태 탭, 기초서류 연결 현황, 교육용 자료 내려받기
 
 // ---------- 화면 전환 ----------
@@ -34,27 +34,6 @@ syncNav();
 ["analysisPanel", "comparePanel"].forEach(id => new MutationObserver(() => {
   if (!$(id).hidden && curView !== "home") showView("home", id);
 }).observe($(id), { attributes: true, attributeFilter: ["hidden"] }));
-
-// ---------- 특징 바로 찾기 ----------
-$("featureChips").innerHTML = FEATURES.map(f =>
-  `<button type="button" class="fchip" data-feature="${esc(f.name)}" title="${esc(f.name)} 상품 찾기">${esc(f.name)}</button>`).join("");
-$("featureChips").addEventListener("click", e => {
-  const b = e.target.closest("[data-feature]");
-  if (!b) return;
-  $("keyword").value = b.dataset.feature;
-  renderAll();
-  markFeature();
-  $("answerPanel").scrollIntoView({ behavior: "smooth", block: "start" });
-});
-
-// 지금 검색창이 특징 이름이면 왼쪽 메뉴에서 그 특징을 강조
-function markFeature() {
-  const k = $("keyword").value.trim();
-  document.querySelectorAll("#featureChips .fchip").forEach(b => b.classList.toggle("on", b.dataset.feature === k));
-}
-$("searchForm").addEventListener("submit", markFeature);
-$("resetBtn").addEventListener("click", markFeature);
-$("keyword").addEventListener("input", markFeature);
 
 // ---------- 상품 목록 판매상태 탭 → 숨은 판매상태 선택칸(catStatus)과 연동 ----------
 $("catTabs").addEventListener("click", e => {
@@ -174,7 +153,6 @@ document.addEventListener("click", e => {
   $("searchForm").reset();
   $("keyword").value = b.dataset.try;
   renderAll();
-  markFeature();
   showView("home", "searchPanel");
 });
 

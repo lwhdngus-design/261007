@@ -88,7 +88,7 @@
   #viewEdu .db-panel { margin: 12px 0 0; border: 0; padding: 0; }
   #viewEdu .db-panel > h2 { font-size: 16px; }
 
-  .app { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 72px; padding-top: 18px; padding-bottom: 60px; }
+  .app { display: block; padding-top: 18px; padding-bottom: 60px; }
   .crumb { text-align: right; font-size: 13px; color: var(--muted); margin-bottom: 20px; }
   .crumb b { color: #222; }
 
@@ -121,24 +121,28 @@
   .page-title { font-size: 32px; font-weight: 800; color: var(--accent); margin: 0 0 14px; letter-spacing: -.05em; }
   .page-desc { color: #555; line-height: 1.7; margin: 0 0 24px; font-size: 15px; }
   .panel { background: var(--panel); margin: 0 0 44px; }
+  .search-panel { margin-bottom: 30px; }
   .panel > h2, .analysis-head h2, .catalog-head h2 { font-size: 21px; margin: 0 0 12px; font-weight: 700; letter-spacing: -.03em; }
   .panel > h2::before, .analysis-head h2::before, .catalog-head h2::before { content: ""; display: inline-block; width: 6px; height: 6px; background: var(--accent); margin-right: 8px; vertical-align: 5px; }
 
   /* 검색 상자: 왼쪽 회색 항목명 · 오른쪽 입력 · 큰 검색 버튼 */
-  .sbox { display: grid; grid-template-columns: minmax(0, 1fr) 150px; border-top: 2px solid var(--accent); border-bottom: 1px solid var(--line-2); }
+  .sbox { display: grid; grid-template-columns: minmax(0, 1fr) 112px; border-top: 2px solid var(--accent); border-bottom: 1px solid var(--line-2); }
   .srows { display: grid; }
-  .srow { display: grid; grid-template-columns: 170px minmax(0, 1fr); }
+  .srow { display: grid; grid-template-columns: 128px minmax(0, 1fr); }
   .srow + .srow .slabel, .srow + .srow .sfield { border-top: 1px solid #ececec; }
-  .slabel { background: var(--label-bg); border-right: 1px solid var(--line); padding: 12px 18px; font-size: 15px; color: #333; display: flex; align-items: center; }
+  .slabel { background: var(--label-bg); border-right: 1px solid var(--line); padding: 6px 14px; font-size: 13px; color: #333; display: flex; align-items: center; }
   .slabel::before { content: "·"; margin-right: 6px; color: #888; }
-  .sfield { padding: 8px 18px 8px 26px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .sfield { padding: 6px 12px 6px 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .sfield > * { flex: 1 1 160px; }
-  .sbtns { display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 12px 0 12px 16px; }
+  .sfield-row .period { flex: 2 1 300px; }
+  .sfield-row select { flex: 1 1 130px; }
+  .sfield select, .sfield input { font-size: 13px; }
+  .sbtns { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 6px 0 6px 10px; }
   .sbtns button { width: 100%; }
-  .sbtns .primary { font-size: 17px; padding: 16px 0; font-weight: 600; }
+  .sbtns .primary { font-size: 14px; padding: 7px 0; font-weight: 600; }
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  input, select, button { font: inherit; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 0; width: 100%; background: #fff; color: var(--text); }
-  #keyword { font-size: 16px; padding: 11px 12px; }
+  input, select, button { font: inherit; padding: 5px 8px; border: 1px solid var(--line-2); border-radius: 0; width: 100%; background: #fff; color: var(--text); }
+  #keyword { font-size: 14px; padding: 6px 10px; }
   input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-weak); }
   .period { display: flex; gap: 6px; align-items: center; }
   .period span { color: var(--muted); }
@@ -232,13 +236,13 @@
   .catalog-head h2 { margin: 0; }
   .catalog-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
   .tabs { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 22px; }
-  .tabs button { border: 1px solid var(--line-2); border-left-width: 0; background: var(--sub-bg); padding: 13px 8px; font-size: 16px; color: #444; }
+  .tabs button { border: 1px solid var(--line-2); border-left-width: 0; background: var(--sub-bg); padding: 8px 8px; font-size: 14px; color: #444; }
   .tabs button:first-child { border-left-width: 1px; }
   .tabs button.on { background: #fff; border-top: 2px solid var(--accent); border-bottom-color: #fff; color: var(--accent); font-weight: 700; }
   .tabs button:not(.on) { border-bottom-color: var(--line-2); }
   .tabs-line { display: none; }
-  .cat-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; padding: 12px 14px; background: var(--label-bg); border: 1px solid var(--line); }
-  .cat-filters input, .cat-filters select { width: auto; min-width: 150px; }
+  .cat-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; padding: 8px 12px; background: var(--label-bg); border: 1px solid var(--line); }
+  .cat-filters input, .cat-filters select { width: auto; min-width: 130px; font-size: 13px; }
   .cat-filters input[type=checkbox] { min-width: 0; }
   #catStatus { display: none; }
   table.catalog th, table.catalog td { padding: 10px 6px; font-size: 13px; }
@@ -326,16 +330,6 @@
 </header>
 
 <div class="wrap app" id="viewHome" data-page="home">
-  <!-- 왼쪽 메뉴: 특징 바로 찾기 -->
-  <aside class="side">
-    <section class="side-card open">
-      <h2>특징 바로 찾기</h2>
-      <div class="sub">
-        <div id="featureChips" class="fchips"></div>
-        <p class="note sub-note">특징은 features.csv에 한 줄씩 추가합니다.</p>
-      </div>
-    </section>
-  </aside>
 
 <main>
   <div class="crumb">홈 &gt; <b>기초서류 검색</b></div>
@@ -352,16 +346,13 @@
           <div class="sfield"><input id="keyword" placeholder="예) 유지보너스 / 제1납입기간과 제2납입기간이 구분된 종신보험이 뭐였지?" autocomplete="off" /></div>
         </div>
         <div class="srow">
-          <div class="slabel">판매기간</div>
-          <div class="sfield"><div class="period">
-            <input type="date" id="from" aria-label="판매기간 From" />
-            <span>~</span>
-            <input type="date" id="to" aria-label="판매기간 To" />
-          </div></div>
-        </div>
-        <div class="srow">
-          <div class="slabel">분류 · 판매상태</div>
-          <div class="sfield">
+          <div class="slabel">판매기간 · 분류</div>
+          <div class="sfield sfield-row">
+            <div class="period">
+              <input type="date" id="from" aria-label="판매기간 From" />
+              <span>~</span>
+              <input type="date" id="to" aria-label="판매기간 To" />
+            </div>
             <select id="category" aria-label="상품분류"><option value="">상품분류 전체</option></select>
             <select id="status" aria-label="판매상태">
               <option value="">판매상태 전체</option>
