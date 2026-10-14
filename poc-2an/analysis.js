@@ -70,6 +70,14 @@ const PAYTABLE_HEAD = /보험금\s*지급\s*기준\s*표/;
 const isPayTableTitle = l => PAYTABLE_HEAD.test(l.compact) && !isTocLine(l.text) && l.compact.length <= 40 &&
   /보험금지급기준표[)\]】>]*$/.test(l.compact.replace(/\([^)]*\)$/, ""));
 const NOTE_START = /^\s*(\(?주\s*\d*\)|주\s*\d*[).:：]|주\s*\d+\s|※|\*|<\s*주|【\s*주|\[\s*주)/;
+const NOTE_ITEM = /^\s*(\d+[.)]\s|[①-⑳]|\(\d+\)|[가-하][.)]\s|-\s|ㆍ|·)/;
+// 표 다음에 오는 예시 상자 등은 표 영역에서 제외
+const REGION_END = /^\s*(【[^】]*예시[^】]*】|\[[^\]]*예시[^\]]*\])/;
+// 감액·면책 판정: 보험금 지급 맥락이 있고, 이율·적립액 설명은 제외 ("5년 이내 1.25%" 같은 최저보증이율 문장 오인 방지)
+const PAY_CONTEXT = /지급|보험금|급여금|진단비|진단금|수술비|입원비|보장/;
+const NOT_BENEFIT = /이율|금리|이자|적립액|적립금|수수료|해지환급금|보험료의?납입/;
+const isReduce = t => { const c = norm(t); return REDUCE_RE.test(c) && PAY_CONTEXT.test(c) && !NOT_BENEFIT.test(c); };
+const isExempt = t => { const c = norm(t); return EXEMPT_RE.test(c) && !NOT_BENEFIT.test(c); };
 const TABLE_END = /^\s*(【\s*(부\s*표|별\s*표)|\[\s*(부\s*표|별\s*표)|<\s*(부\s*표|별\s*표)|부\s*표\s*\d|별\s*표\s*\d|제\s*\d+\s*관|제\s*\d+\s*조\s*[\[(【(])/;
 const MAX_TABLE_LINES = 160;
 
@@ -86,11 +94,12 @@ function payTablesOf(docs) {
       for (; j < lines.length && j < i + MAX_TABLE_LINES; j++) {
         const l = lines[j];
         if (isPayTableTitle(l)) break; // 다음 지급기준표
-        if (j > i + 1 && TABLE_END.test(l.text)) break;
+        if (j > i + 1 && (TABLE_END.test(l.text) || REGION_END.test(l.text))) break;
         if (isTocLine(l.text)) continue;
         if (NOTE_START.test(l.text)) { inNotes = true; notes.push({ text: l.text, page: l.page, doc: d }); continue; }
         if (inNotes) {
-          // 주석이 여러 줄이면 앞 주석에 이어 붙임
+          // "(주)" 아래 1. 2. ① 같은 번호 항목은 각각 하나의 주석, 그 밖의 줄은 앞 주석에 이어 붙임
+          if (NOTE_ITEM.test(l.text)) { notes.push({ text: l.text, page: l.page, doc: d }); continue; }
           const last = notes[notes.length - 1];
           if (last && last.text.length < 600) last.text += " " + l.text;
           continue;
@@ -119,7 +128,7 @@ function structurePage(items, pageNo, st) {
     const x = it.transform[4], y = it.transform[5];
     let line = lines.find(l => Math.abs(l.y - y) <= 2);
     if (!line) lines.push(line = { y, items: [] });
-    line.items.push({ x, w: it.width || 0, str: it.str });
+    line.items.push({ x, w: it.width || 0, h: it.height || Math.abs(it.transform[3]) || 10, str: it.str });
   }
   // 글자 조각 잇기: 간격이 좁으면 붙이고(한 글자씩 저장된 PDF 대비), 넓으면 띄움
   const join = its => its.reduce((acc, it, i) => {
@@ -131,6 +140,7 @@ function structurePage(items, pageNo, st) {
     l.items.sort((a, b) => a.x - b.x);
     l.text = join(l.items);
     l.compact = norm(l.text);
+    l.h = Math.max(...l.items.map(i => i.h));
   }
   const flush = () => {
     const seg = st.cur;
@@ -159,8 +169,22 @@ function structurePage(items, pageNo, st) {
     seg.raw = [];
   };
   for (const l of lines) {
-    if (isPayTableTitle(l)) { flush(); st.segs.push(st.cur = { title: l.text, page: pageNo, cols: null, raw: [], rows: [] }); st.inNotes = false; continue; }
+    if (isPayTableTitle(l)) {
+      flush();
+      st.segs.push(st.cur = { title: l.text, page: pageNo, cols: null, raw: [], rows: [],
+        regions: [{ page: pageNo, top: l.y + l.h, bottom: l.y - 3 }] });
+      st.inNotes = false;
+      continue;
+    }
     if (!st.cur) continue;
+    if (TABLE_END.test(l.text) || REGION_END.test(l.text)) { flush(); st.cur = null; continue; }
+    // 표·주석이 차지하는 세로 범위 (다음 쪽으로 이어지면 최대 2쪽까지)
+    let reg = st.cur.regions.find(r => r.page === pageNo);
+    if (!reg) {
+      if (st.cur.regions.length >= 2) { flush(); st.cur = null; continue; }
+      st.cur.regions.push(reg = { page: pageNo, top: l.y + l.h, bottom: l.y - 3 });
+    }
+    reg.bottom = Math.min(reg.bottom, l.y - Math.max(3, l.h * 0.35));
     if (NOTE_START.test(l.text)) { flush(); st.inNotes = true; continue; }
     if (/지급사유/.test(l.compact) && /지급금액|지급액|보험금액/.test(l.compact) && l.compact.length < 60) {
       flush();
@@ -172,7 +196,6 @@ function structurePage(items, pageNo, st) {
       continue;
     }
     if (st.inNotes || !st.cur.cols) continue;
-    if (TABLE_END.test(l.text)) { flush(); st.cur = null; continue; }
     st.cur.raw.push({ ...l, page: pageNo });
   }
   flush();
@@ -197,6 +220,34 @@ async function prepareTables(docs) {
         page.cleanup();
         prev = p;
       }
+      // 표 영역을 그림으로 잘라 둠 (약관에 보이는 모양 그대로)
+      const canvases = new Map();
+      for (const seg of st.segs) {
+        seg.images = [];
+        for (const r of seg.regions || []) {
+          try {
+            if (!canvases.has(r.page)) {
+              const page = await pdf.getPage(r.page);
+              const vp = page.getViewport({ scale: 2 });
+              const cv = document.createElement("canvas");
+              cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+              await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+              canvases.set(r.page, { cv, vp });
+            }
+            const { cv, vp } = canvases.get(r.page);
+            const top = Math.max(0, vp.convertToViewportPoint(0, r.top + 4)[1]);
+            const bottom = Math.min(cv.height, vp.convertToViewportPoint(0, r.bottom)[1] + 4);
+            if (bottom - top < 20) continue;
+            const out = document.createElement("canvas");
+            out.width = cv.width; out.height = Math.ceil(bottom - top);
+            const ctx = out.getContext("2d");
+            ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, out.width, out.height);
+            ctx.drawImage(cv, 0, top, cv.width, out.height, 0, 0, out.width, out.height);
+            seg.images.push({ page: r.page, src: out.toDataURL("image/jpeg", 0.85) });
+          } catch (e) { /* 그림을 못 만들면 글자 결과만 사용 */ }
+        }
+      }
+      canvases.clear();
       await pdf.destroy();
       d._tableSegs = st.segs;
     } catch (e) {
@@ -211,7 +262,11 @@ function attachStructured(tables) {
   tables.forEach(t => { if (!byDoc.has(t.doc)) byDoc.set(t.doc, []); byDoc.get(t.doc).push(t); });
   for (const [d, ts] of byDoc) {
     const segs = d._tableSegs || [];
-    ts.forEach((t, i) => { if (segs[i] && segs[i].rows.length) t.structRows = segs[i].rows.map(r => ({ ...r, doc: d })); });
+    ts.forEach((t, i) => {
+      if (!segs[i]) return;
+      if (segs[i].rows.length) t.structRows = segs[i].rows.map(r => ({ ...r, doc: d }));
+      if (segs[i].images && segs[i].images.length) t.images = segs[i].images.map(im => ({ ...im, doc: d }));
+    });
   }
   return tables;
 }
@@ -269,23 +324,24 @@ function analyzeProduct(key, start) {
   // 2) 항목별 원문 줄 — 보험금 지급사유·감액·면책은 약관의 '보험금 지급기준표'와 그 주석을 우선 사용
   const tables = attachStructured(payTablesOf(base.filter(d => d.docType === "약관")));
   R.payTables = tables;
-  const tRef = x => `약관 p.${x.page} 지급기준표${x.note ? " 주석" : ""}`;
+  // 근거 표시: 어느 표에서 나왔는지 (예: "약관 p.4 별표2 암진단특약 보험금 지급기준표 주석")
+  const tRef = x => `약관 p.${x.page} ${(x.table || "지급기준표").replace(/\s+/g, " ").slice(0, 30)}${x.note ? " 주석" : ""}`;
   if (!tables.length && base.some(d => d.docType === "약관"))
     R.checks.push("약관에서 '보험금 지급기준표'를 찾지 못해 지급사유·감액·면책은 본문 문장에서 찾았습니다 (정확도 낮음).");
   const tLine = x => ({ text: x.text.slice(0, 400), ref: tRef(x), hit: { doc: x.doc, page: x.page } });
   for (const def of ITEM_DEFS) {
     if (tables.length && ["benefit", "reduce", "exempt"].includes(def.id)) {
       const main = tables[0]; // 첫 번째 지급기준표 = 주계약
-      const notes = tables.flatMap(t => t.notes.map(n => ({ ...n, note: true })));
-      const rowsAll = tables.flatMap(t => t.structRows || t.rows);
+      const notes = tables.flatMap(t => t.notes.map(n => ({ ...n, note: true, table: t.title })));
+      const rowsAll = tables.flatMap(t => (t.structRows || t.rows).map(r => ({ ...r, table: t.title })));
       let lines, more = 0, none = false;
       if (def.id === "benefit") {
         const mainRows = main.structRows || main.rows;
-        lines = mainRows.slice(0, 10).map(tLine);
+        lines = mainRows.slice(0, 10).map(r => tLine({ ...r, table: main.title }));
         more = mainRows.length - lines.length;
       } else {
-        const re = def.id === "reduce" ? REDUCE_RE : EXEMPT_RE;
-        const found = [...notes, ...rowsAll].filter(x => re.test(norm(x.text)));
+        const test = def.id === "reduce" ? isReduce : isExempt;
+        const found = [...notes, ...rowsAll].filter(x => test(x.text));
         lines = found.slice(0, 6).map(tLine);
         more = found.length - lines.length;
         none = !found.length;
@@ -293,7 +349,8 @@ function analyzeProduct(key, start) {
       // 지급사유는 첫 번째(주계약) 표만 보여주고 나머지 표 제목을 안내. 감액·면책은 모든 표의 주석에서 찾음
       const extra = def.id === "benefit" && tables.length > 1
         ? "그 밖의 지급기준표: " + tables.slice(1).map(t => `${t.title} (p.${t.page})`).join(", ") : "";
-      R.rows.push({ id: def.id, label: def.label, lines, more, none, fromTable: true, extra });
+      R.rows.push({ id: def.id, label: def.label, lines, more, none, fromTable: true, extra,
+                    images: def.id === "benefit" ? main.images || [] : [] });
       if (!lines.length && !none) R.checks.push(`${def.label}: 지급기준표에서 표 내용을 읽지 못함 (약관 p.${main.page} 원문 확인)`);
       continue;
     }
@@ -334,6 +391,16 @@ function analyzeProduct(key, start) {
 }
 
 // ---------- 화면 ----------
+// 지급기준표 그림 (누르면 PDF 해당 쪽) + 글자로 읽은 결과는 펼쳐보기
+function tableImagesHtml(r) {
+  const imgs = r.images.map(im => `<a href="#" class="tblimg" data-open="${DOCS.indexOf(im.doc)}" data-page="${im.page}" title="약관 p.${im.page} 열기">` +
+    `<img src="${im.src}" alt="보험금 지급기준표 (약관 p.${im.page})"></a>`).join("");
+  const text = r.lines.length ? `<details class="tbltext"><summary>글자로 보기 (복사용 · 칸 구분이 정확하지 않을 수 있음)</summary>${r.lines.map(lineHtml).join("")}</details>` : "";
+  return imgs + `<p class="note">약관 p.${r.images.map(i => i.page).join(", p.")} 보험금 지급기준표 — 그림을 누르면 원문이 열립니다</p>` + text +
+    (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "");
+}
+
+// ---------- 화면 ----------
 let CURRENT = null;
 
 const lineHtml = l => `<p class="line">${esc(l.text)} ` +
@@ -359,7 +426,7 @@ async function showAnalysis(key, start) {
   $("analysisVersion").innerHTML = versions.map(v => `<option value="${esc(v)}"${v === start ? " selected" : ""}>판매개시일 ${esc(v || "미상")}</option>`).join("");
   const rows = R.rows.map(r => `<tr>
       <td>${esc(r.label)}</td>
-      <td>${r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
+      <td>${r.images && r.images.length ? tableImagesHtml(r) : r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
         + (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "")
  : `<span class="na">${esc(emptyText(r))}</span>`}</td>
       <td>${r.lines.length ? esc([...new Set(r.lines.map(l => l.ref))].join(", ")) : "-"}</td>

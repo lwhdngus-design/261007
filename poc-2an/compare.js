@@ -119,6 +119,7 @@ function renderCompare() {
     if (onlyDiff && (st.cls === "same" || st.cls === "none")) return "";
     const cells = results.map(R => {
       const row = R.rows.find(r => r.label === label);
+      if (row.images && row.images.length) return `<td>${tableImagesHtml(row)}</td>`;
       return `<td>${row.lines.length ? row.lines.map(lineHtml).join("") + (row.more > 0 ? `<p class="note">외 ${row.more}줄</p>` : "")
         : `<span class="na">${esc(emptyText(row))}</span>`}</td>`;
     }).join("");
