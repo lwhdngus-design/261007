@@ -585,7 +585,7 @@ async function showAnalysis(key, start) {
     <h3>한눈에 보기</h3>
     ${R.overview.map(t => `<p class="line">${esc(t)}</p>`).join("")}
     <h3>핵심 특징 표</h3>
-    <table class="facts"><thead><tr><th>항목</th><th>내용 (원문 그대로)</th><th>문서 근거</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="table-scroll"><table class="facts"><thead><tr><th>항목</th><th>내용 (원문 그대로)</th><th>문서 근거</th></tr></thead><tbody>${rows}</tbody></table></div>
     <h3>유의사항</h3>
     ${R.cautions.length ? `<ul>${R.cautions.map(l => `<li>${lineHtml(l)}</li>`).join("")}</ul>` : `<p class="na">문서에서 유의 조건 줄을 찾지 못했습니다.</p>`}
     <h3>확인 필요 항목</h3>

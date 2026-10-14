@@ -5,20 +5,55 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>상품 검증 기준자료 통합 검색</title>
 <style>
+  /* 배치: 왼쪽 사이드바(연결·설정) + 오른쪽 본문(검색 → 결과 → 분석·비교 → 상품 목록) */
   :root {
-    --bg: #f5f7fa; --panel: #ffffff; --text: #1f2933; --muted: #6b7785;
-    --line: #dde3ea; --accent: #2563eb; --accent-weak: #e8f0fe;
-    --on: #15803d; --on-bg: #dcfce7; --off: #6b7280; --off-bg: #eceff3;
+    --bg: #eef2f4; --panel: #ffffff; --text: #172430; --muted: #5f6f7c;
+    --line: #d9e1e6; --accent: #0d6b78; --accent-2: #0a5662; --accent-weak: #e2f1f2;
+    --ink: #102a3a; --ink-2: #16384b; --side-text: #d6e3ea; --side-muted: #8fa8b6;
+    --on: #15803d; --on-bg: #dcfce7; --off: #6b7280; --off-bg: #eceff3; --gold: #b45309;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text);
     font-family: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; font-size: 14px; }
-  header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 16px 24px; }
-  header h1 { margin: 0; font-size: 18px; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-  form.search { display: grid; grid-template-columns: 2fr 1.6fr 1fr 1fr auto; gap: 12px; align-items: end; }
+  .app { display: grid; grid-template-columns: 296px minmax(0, 1fr); min-height: 100vh; }
+
+  /* ---- 사이드바 ---- */
+  .side { position: sticky; top: 0; height: 100vh; overflow-y: auto; color: var(--side-text);
+    background: var(--ink) repeating-linear-gradient(180deg, transparent 0 27px, rgba(255,255,255,.035) 27px 28px);
+    padding: 24px 18px 18px; display: flex; flex-direction: column; gap: 16px; }
+  .brand { padding: 2px 4px 14px; border-bottom: 1px solid rgba(255,255,255,.12); }
+  .brand .eyebrow { font-size: 11px; letter-spacing: .12em; color: var(--side-muted); }
+  .brand h1 { margin: 6px 0 4px; font-size: 21px; line-height: 1.3; color: #fff; letter-spacing: -.01em; }
+  .brand p { margin: 0; font-size: 12px; color: var(--side-muted); }
+  .side-card { background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.1); border-radius: 10px; padding: 14px; display: grid; gap: 8px; }
+  .side-card h2 { margin: 0; font-size: 13px; color: #fff; display: flex; align-items: center; gap: 8px; }
+  .side .note { color: var(--side-muted); font-size: 12px; margin: 0; line-height: 1.5; word-break: break-all; }
+  .side .note b { color: var(--side-text); font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; flex: none; }
+  .dot.ok { background: #34d399; box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+  .side-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .side button, .side .folder-btn { background: transparent; color: var(--side-text); border: 1px solid rgba(255,255,255,.22);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; margin: 0; cursor: pointer; width: auto; }
+  .side button:hover, .side .folder-btn:hover { background: rgba(255,255,255,.08); }
+  .side .progress { background: rgba(255,255,255,.12); max-width: none; }
+  .side .progress div { background: #34d399; }
+  .fchips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .fchip { border-radius: 999px !important; padding: 3px 10px !important; }
+  .switch { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--side-text); margin: 0; cursor: pointer; }
+  .switch input { width: 16px; height: 16px; accent-color: #34d399; margin: 0; }
+  .side-foot { margin-top: auto; font-size: 11px; color: var(--side-muted); line-height: 1.6; padding: 0 4px; }
+
+  /* ---- 본문 ---- */
+  main { padding: 24px clamp(16px, 3vw, 36px) 40px; max-width: 1320px; width: 100%; min-width: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 18px; }
+  .panel > h2, .analysis-head h2 { font-size: 16px; margin: 0 0 8px; }
+  .search-panel { border-top: 3px solid var(--accent); box-shadow: 0 6px 18px rgba(16,42,58,.06); }
+  .search-panel .q-title { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+  form.search { display: grid; grid-template-columns: 1.7fr 1fr 1fr auto; gap: 12px; align-items: end; }
+  form.search .q { grid-column: 1 / -1; }
+  form.search .q input { font-size: 16px; padding: 12px 14px; border-color: #b9c8d0; }
+  form.search .q input:focus { outline: 2px solid var(--accent-weak); border-color: var(--accent); }
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   input, select, button { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; width: 100%; background: #fff; color: var(--text); }
   .period { display: flex; gap: 6px; align-items: center; }
@@ -26,34 +61,33 @@
   .buttons { display: flex; gap: 6px; }
   button { cursor: pointer; width: auto; white-space: nowrap; }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: var(--accent-2); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .summary { color: var(--muted); margin: 0 0 10px; }
   .summary b { color: var(--text); }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
-  th { font-size: 12px; color: var(--muted); font-weight: 600; background: #fafbfc; white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; background: #f6f8f9; white-space: nowrap; }
   tbody tr { cursor: pointer; }
-  tbody tr:hover { background: var(--accent-weak); }
+  tbody tr:hover { background: #f3f9f9; }
   td.code { font-family: Consolas, monospace; color: var(--muted); }
   td.num { text-align: center; }
   .badge { display: inline-block; white-space: nowrap; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
   .badge.on { color: var(--on); background: var(--on-bg); }
   .badge.off { color: var(--off); background: var(--off-bg); }
-  .badge.plan { color: #b45309; background: #fef3c7; }
+  .badge.plan { color: var(--gold); background: #fef3c7; }
   mark { background: #fde68a; padding: 0 1px; }
   .empty { text-align: center; color: var(--muted); padding: 32px 0; }
   .hit { font-size: 12px; color: var(--muted); }
-  h2 { font-size: 15px; margin: 0 0 8px; }
-  .docs-load { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
   .note { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-  .folder-btn { margin: 0; padding: 8px 14px; border-radius: 6px; background: var(--accent); color: #fff;
-    font-size: 14px; cursor: pointer; white-space: nowrap; }
-  .progress { height: 6px; background: var(--line); border-radius: 3px; margin-top: 8px; overflow: hidden; max-width: 480px; }
+  .folder-btn { display: inline-block; }
+  .progress { height: 6px; background: var(--line); border-radius: 3px; margin-top: 4px; overflow: hidden; }
   .progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
   table.docs td { vertical-align: top; }
   .path { font-size: 12px; color: var(--muted); word-break: break-all; }
   .snip { font-size: 13px; margin: 0 0 4px; }
   .snip .pg { color: var(--accent); font-size: 12px; margin-right: 4px; white-space: nowrap; }
-  .warn { color: #b45309; font-size: 12px; }
+  .warn { color: var(--gold); font-size: 12px; }
   td.actions { white-space: nowrap; }
   button.mini { padding: 2px 8px; font-size: 12px; margin-left: 6px; }
   td.actions button { margin: 0 0 4px; }
@@ -70,45 +104,54 @@
   .tag { display: inline-block; padding: 1px 8px; border-radius: 4px; background: var(--on-bg); color: var(--on); font-size: 12px; margin-right: 4px; }
   .analysis-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
   .analysis-head select { width: auto; }
+  .analysis-head .buttons { flex-wrap: wrap; }
   #analysisBody h3 { font-size: 14px; margin: 18px 0 6px; }
   #analysisBody ul { margin: 4px 0; padding-left: 20px; }
   #analysisBody li { margin-bottom: 4px; }
   table.facts td { vertical-align: top; }
-  table.facts td:first-child { white-space: nowrap; font-weight: 600; width: 110px; }
+  table.facts td:first-child { white-space: nowrap; font-weight: 600; width: 120px; }
   table.facts td:last-child { font-size: 12px; color: var(--muted); width: 160px; }
   .line { margin: 0 0 4px; }
   .ref { color: var(--accent); font-size: 12px; white-space: nowrap; }
   .na { color: var(--muted); }
-  .check { color: #b45309; }
+  .check { color: var(--gold); }
   .inline { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--text); font-size: 13px; }
   .inline input { width: auto; }
-  .tray { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--panel); border-top: 2px solid var(--accent);
-    box-shadow: 0 -4px 12px rgba(0,0,0,.08); padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .tray { position: fixed; left: 296px; right: 0; bottom: 0; z-index: 10; background: var(--panel); border-top: 2px solid var(--accent);
+    box-shadow: 0 -4px 12px rgba(0,0,0,.08); padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   .tray[hidden] { display: none; }
   #trayItems { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; align-items: center; }
-  body:has(#compareTray:not([hidden])) main { padding-bottom: 90px; }
+  body:has(#compareTray:not([hidden])) main { padding-bottom: 100px; }
   .table-scroll { overflow-x: auto; }
   table.compare td:first-child { width: 100px; }
   table.compare td:last-child { width: 90px; font-size: 12px; }
   table.compare td { min-width: 200px; }
   table.compare td:first-child, table.compare td:last-child { min-width: 0; }
-  tr.cmp-diff td:first-child { color: #b45309; }
+  tr.cmp-diff td:first-child { color: var(--gold); }
   tr.cmp-diff { background: #fffbeb; }
   #compareBody h4 { font-size: 13px; margin: 14px 0 4px; }
   .difflist { list-style: none; padding-left: 0; margin: 4px 0; }
   .difflist li { padding: 4px 8px; border-left: 3px solid var(--line); margin-bottom: 4px; font-size: 13px; }
   .difflist li.add { border-color: var(--on); background: var(--on-bg); }
   .difflist li.del { border-color: #dc2626; background: #fee2e2; }
-  .difflist li.chg { border-color: #b45309; background: #fef3c7; }
-  .load-actions { display: flex; flex-direction: column; gap: 6px; }
+  .difflist li.chg { border-color: var(--gold); background: #fef3c7; }
+  /* 상품 목록 (메인) */
+  .catalog-panel { padding: 0; overflow: hidden; }
+  .catalog-head { padding: 18px 18px 12px; display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+    background: linear-gradient(180deg, #f5fafa, #fff); border-bottom: 1px solid var(--line); }
+  .catalog-head h2 { margin: 0; font-size: 18px; }
+  .catalog-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .catalog-panel .cat-filters, .catalog-panel #catalogBody { padding: 0 18px; }
+  .catalog-panel .cat-filters { padding-top: 12px; }
+  .catalog-panel #catalogBody { padding-bottom: 18px; }
   .cat-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .cat-filters input, .cat-filters select { width: auto; min-width: 140px; }
   .cat-filters input[type=checkbox] { min-width: 0; }
-  table.catalog th, table.catalog td { padding: 7px 6px; font-size: 13px; }
+  table.catalog th, table.catalog td { padding: 8px 6px; font-size: 13px; }
   table.catalog th.fcol { font-size: 11px; white-space: normal; width: 44px; text-align: center; line-height: 1.2; }
   table.catalog td.fcell { text-align: center; }
   table.catalog td:first-child { min-width: 190px; }
-  table.catalog tr.sub td { border-top: 0; background: #fafbfc; }
+  table.catalog tr.sub td { border-top: 0; background: #f8fafb; }
   .fm { color: var(--muted); font-size: 14px; }
   .fm.on { color: var(--on); }
   .dm { display: inline-block; width: 18px; text-align: center; font-size: 11px; color: #c4cad3; border: 1px solid var(--line); border-radius: 3px; margin-right: 2px; }
@@ -116,6 +159,9 @@
   .vlist { max-width: 220px; }
   .vchip { display: inline-block; font-size: 12px; margin: 0 4px 2px 0; }
   .nowrap { white-space: nowrap; }
+  .empty-state { text-align: center; padding: 40px 16px; color: var(--muted); }
+  .empty-state b { display: block; color: var(--text); font-size: 15px; margin-bottom: 6px; }
+  .empty-state button { margin-top: 12px; }
   .tblwrap { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 4px; }
   .tblthumb { padding: 0; border: 1px solid var(--line); background: #fff; width: 160px; height: 96px; overflow: hidden; flex: none; cursor: zoom-in; }
   .tblthumb img { display: block; width: 100%; height: auto; }
@@ -129,28 +175,68 @@
   .modal-col h4 { margin: 0 0 6px; font-size: 14px; }
   .modal-col img { display: block; width: 100%; height: auto; border: 1px solid var(--line); background: #fff; }
   .tbltext summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  .db-panel { border-style: dashed; }
+  .db-panel h2 small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
+  @media (max-width: 960px) {
+    .app { grid-template-columns: 1fr; }
+    .side { position: static; height: auto; }
+    .side-foot { margin-top: 0; }
+    .tray { left: 0; }
+    form.search { grid-template-columns: 1fr 1fr; }
+  }
   @media (max-width: 760px) {
     table.facts td:last-child { display: none; }
-    .docs-load { flex-direction: column; align-items: stretch; text-align: left; }
     table.docs th:nth-child(4), table.docs td:nth-child(4) { min-width: 180px; }
     form.search { grid-template-columns: 1fr; }
-    th:nth-child(3), td:nth-child(3), th:nth-child(6), td:nth-child(6) { display: none; }
+    #results th:nth-child(3), #results td:nth-child(3) { display: none; }
   }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>상품 검증 기준자료 통합 검색</h1>
-  <p>가상 데이터(가나다생명) 기반 PoC · 기준일 <span id="today"></span></p>
-</header>
+<div class="app">
+  <!-- 사이드바: 기초서류 연결 · 특징 바로 찾기 · 보기 설정 -->
+  <aside class="side">
+    <div class="brand">
+      <div class="eyebrow">기초서류 · 계리 검증</div>
+      <h1>상품 검증 기준자료<br>통합 검색</h1>
+      <p>사업방법서 · 상품요약서 · 약관</p>
+    </div>
+
+    <section class="side-card docs-load">
+      <h2><span class="dot" id="docsDot"></span>기초서류 연결</h2>
+      <p class="note" id="serverMode" hidden>폴더 <b id="docsFolder"></b></p>
+      <p class="note" id="docsStatus">연결된 폴더 없음 — start.bat으로 실행하면 지정 폴더가 자동 연결됩니다</p>
+      <div class="progress" id="docsProgress" hidden><div id="docsBar"></div></div>
+      <div class="side-actions">
+        <button type="button" id="reloadDocsBtn" hidden>새로고침</button>
+        <label class="folder-btn">폴더 선택<input type="file" id="folderInput" webkitdirectory multiple hidden /></label>
+      </div>
+      <p class="note" id="docsNote">사업방법서·약관·상품요약서 폴더를 선택하면 브라우저가 PC 안에서 본문을 읽어 검색에 포함합니다.
+        파일은 어디에도 업로드·저장되지 않으며, 창을 닫으면 사라집니다.</p>
+    </section>
+
+    <section class="side-card">
+      <h2>특징 바로 찾기</h2>
+      <div class="fchips" id="featureChips"></div>
+      <p class="note">누르면 그 특징이 있는 상품을 찾습니다. 특징은 features.csv에 한 줄씩 추가합니다.</p>
+    </section>
+
+    <section class="side-card">
+      <h2>보기 설정</h2>
+      <label class="switch"><input type="checkbox" id="dbToggle" /> 교육용 가상 상품 DB 표시</label>
+    </section>
+
+    <div class="side-foot">기준일 <span id="today"></span><br>내 PC에서만 동작 · 외부 전송 없음</div>
+  </aside>
 
 <main>
-  <!-- 1. 상단 검색 -->
-  <section class="panel">
+  <!-- 검색 -->
+  <section class="panel search-panel">
     <form class="search" id="searchForm">
-      <div>
+      <div class="q">
         <label for="keyword">키워드 또는 질문</label>
-        <input id="keyword" placeholder="예) 유사암 / 제1보기와 제2보기가 구분된 종신보험이 뭐였지?" autocomplete="off" />
+        <input id="keyword" placeholder="예) 유지보너스 / 제1납입기간과 제2납입기간이 구분된 종신보험이 뭐였지?" autocomplete="off" />
       </div>
       <div>
         <label>판매기간</label>
@@ -180,47 +266,6 @@
     <div class="interp" id="interp" hidden></div>
   </section>
 
-  <!-- 기초서류 PDF 폴더 불러오기 (PC 안에서만 처리, 업로드 없음) -->
-  <section class="panel docs-load">
-    <div>
-      <b>기초서류 PDF 폴더 연결</b>
-      <p class="note" id="docsNote">사업방법서·약관·상품요약서 폴더를 선택하면 브라우저가 PC 안에서 본문을 읽어 위 검색에 포함합니다.
-        파일은 어디에도 업로드·저장되지 않으며, 창을 닫으면 사라집니다.</p>
-      <p class="note" id="serverMode" hidden>자동 연결 폴더: <span id="docsFolder"></span>
-        <button type="button" id="reloadDocsBtn" class="mini">새로고침</button></p>
-      <p class="note" id="docsStatus">연결된 폴더 없음 — start.bat으로 실행하면 지정 폴더가 자동 연결됩니다</p>
-      <div class="progress" id="docsProgress" hidden><div id="docsBar"></div></div>
-    </div>
-    <div class="load-actions">
-      <label class="folder-btn">
-        폴더 선택
-        <input type="file" id="folderInput" webkitdirectory multiple hidden />
-      </label>
-      <button type="button" id="catalogBtn">상품 목록</button>
-    </div>
-  </section>
-
-  <!-- 3단계: 상품 목록 자동 구성 -->
-  <section class="panel" id="catalogPanel" hidden>
-    <div class="analysis-head">
-      <h2>상품 목록</h2>
-      <div class="buttons">
-        <button type="button" id="csvCatalogBtn">엑셀 저장(CSV)</button>
-        <button type="button" id="closeCatalogBtn">닫기</button>
-      </div>
-    </div>
-    <div class="cat-filters">
-      <input id="catSearch" placeholder="상품명 검색" autocomplete="off" />
-      <select id="catKind"><option value="">분류 전체</option></select>
-      <select id="catStatus">
-        <option value="">상태 전체</option><option>판매중</option><option>판매종료</option><option>판매예정</option><option>미상</option>
-      </select>
-      <select id="catFeature"><option value="">특징 전체</option></select>
-      <label class="inline"><input type="checkbox" id="catExpand" /> 판매일자별로 펼치기</label>
-    </div>
-    <div id="catalogBody"></div>
-  </section>
-
   <!-- 질문 답변: 특징으로 찾은 상품 (기초서류 PDF 기준) -->
   <section class="panel" id="answerPanel" hidden>
     <h2>질문 답변 — 상품별</h2>
@@ -228,7 +273,31 @@
     <div id="answerCards"></div>
   </section>
 
-  <!-- 상품 분석: 사업방법서·상품요약서에서 핵심 특징 추출 -->
+  <!-- 기초서류 PDF 검색 결과 -->
+  <section class="panel" id="docsPanel" hidden>
+    <h2>기초서류 검색 결과</h2>
+    <p class="summary" id="docsSummary"></p>
+    <div class="table-scroll"><table class="docs">
+      <thead>
+        <tr><th>판매개시일</th><th>문서유형</th><th>상품 / 파일</th><th>일치 내용</th><th></th></tr>
+      </thead>
+      <tbody id="docsResults"></tbody>
+    </table></div>
+  </section>
+
+  <!-- 교육용 가상 상품 DB (보기 설정에서 켤 때만) -->
+  <section class="panel db-panel" id="dbPanel" hidden>
+    <h2>가상 상품 DB <small>교육용 · 가나다생명</small></h2>
+    <p class="summary" id="summary"></p>
+    <div class="table-scroll"><table>
+      <thead>
+        <tr><th>상품코드</th><th>상품명</th><th>분류</th><th>판매기간</th><th>판매상태</th><th>개정차수</th></tr>
+      </thead>
+      <tbody id="results"></tbody>
+    </table></div>
+  </section>
+
+  <!-- 상품 분석: 핵심 특징 표 -->
   <section class="panel" id="analysisPanel" hidden>
     <div class="analysis-head">
       <h2 id="analysisTitle">상품 분석</h2>
@@ -244,7 +313,7 @@
     <div id="analysisBody"></div>
   </section>
 
-  <!-- 2단계: 상품 비교 · 개정 전후 비교 -->
+  <!-- 상품 비교 · 개정 전후 비교 -->
   <section class="panel" id="comparePanel" hidden>
     <div class="analysis-head">
       <h2 id="compareTitle">상품 비교</h2>
@@ -258,32 +327,30 @@
     <div id="compareBody"></div>
   </section>
 
-  <!-- 2. 결과 테이블 -->
-  <section class="panel">
-    <h2>가상 상품 DB</h2>
-    <p class="summary" id="summary"></p>
-    <table>
-      <thead>
-        <tr><th>상품코드</th><th>상품명</th><th>분류</th><th>판매기간</th><th>판매상태</th><th>개정차수</th></tr>
-      </thead>
-      <tbody id="results"></tbody>
-    </table>
-  </section>
-
-  <!-- 기초서류 PDF 검색 결과 -->
-  <section class="panel" id="docsPanel" hidden>
-    <h2>기초서류(PDF) 검색 결과</h2>
-    <p class="summary" id="docsSummary"></p>
-    <table class="docs">
-      <thead>
-        <tr><th>판매개시일</th><th>문서유형</th><th>상품 / 파일</th><th>일치 내용</th><th></th></tr>
-      </thead>
-      <tbody id="docsResults"></tbody>
-    </table>
+  <!-- 상품 목록 (메인) -->
+  <section class="panel catalog-panel" id="catalogPanel">
+    <div class="catalog-head">
+      <div>
+        <h2>상품 목록</h2>
+        <p>상품명·판매일자를 누르면 상품 분석 · 비교 담기로 상품·개정 비교</p>
+      </div>
+      <button type="button" id="csvCatalogBtn">엑셀 저장(CSV)</button>
+    </div>
+    <div class="cat-filters">
+      <input id="catSearch" placeholder="상품명 검색" autocomplete="off" />
+      <select id="catKind"><option value="">분류 전체</option></select>
+      <select id="catStatus">
+        <option value="">상태 전체</option><option>판매중</option><option>판매종료</option><option>판매예정</option><option>미상</option>
+      </select>
+      <select id="catFeature"><option value="">특징 전체</option></select>
+      <label class="inline"><input type="checkbox" id="catExpand" /> 판매일자별로 펼치기</label>
+    </div>
+    <div id="catalogBody"></div>
   </section>
 </main>
+</div>
 
-<!-- 지급기준표 크게 보기 -->
+<!-- 표 크게 보기 -->
 <div class="modal" id="imgModal" hidden role="dialog" aria-modal="true" aria-labelledby="modalTitle">
   <div class="modal-box">
     <div class="modal-head"><b id="modalTitle"></b><button type="button" id="modalClose">닫기 (Esc)</button></div>
@@ -452,6 +519,7 @@ $("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderA
 <script src="analysis.js"></script>
 <script src="compare.js"></script>
 <script src="catalog.js"></script>
+<script src="layout.js"></script>
 <script>renderAll();</script>
 </body>
 </html>

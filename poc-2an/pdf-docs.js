@@ -139,6 +139,7 @@ function finishLoading(label) {
   $("docsBar").style.width = "100%";
   setTimeout(() => { $("docsProgress").hidden = true; }, 600);
   const failed = DOCS.filter(d => d.error).length, noDate = DOCS.filter(d => !d.start).length;
+  $("docsDot").classList.toggle("ok", DOCS.length > 0);
   $("docsStatus").textContent = `${label} — PDF ${DOCS.length}개` +
     (failed ? ` (본문 못 읽음 ${failed}개)` : "") + (noDate ? ` · 판매일자 인식 못함 ${noDate}개` : "");
   renderAll();
@@ -240,6 +241,7 @@ async function loadFromServer() {
 
 if (SERVER_MODE) {
   $("serverMode").hidden = false;
+  $("reloadDocsBtn").hidden = false;
   $("docsNote").textContent = "start.bat으로 실행 중 — 지정 폴더를 자동으로 읽어 내 PC의 검색 색인(앱 폴더 .docs-cache)에 저장합니다. " +
     "다음 실행부터는 새로 추가·수정된 파일만 읽습니다. 외부로는 아무것도 전송되지 않습니다.";
   const run = () => loadFromServer().catch(err => { indexing = false; $("docsStatus").textContent = "자동 연결 실패: " + err.message; });
@@ -323,7 +325,9 @@ async function renderDocs() {
   const seq = ++docsRenderSeq; // 빠르게 다시 검색하면 이전 결과는 버림
   const cur = currentQuery();
   // 질문(특징) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
-  if (!DOCS.length || cur.mode === "question") { $("docsPanel").hidden = true; return; }
+  // 검색어·조건이 하나도 없으면 문서 목록 대신 상품 목록이 메인
+  const f = cur.form, idle = !f.keyword.trim() && !f.from && !f.to && !f.category && !f.status;
+  if (!DOCS.length || cur.mode === "question" || idle) { $("docsPanel").hidden = true; return; }
   $("docsPanel").hidden = false;
   let rows, snips;
   try {

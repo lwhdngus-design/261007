@@ -54,18 +54,16 @@ function buildCatalog() {
 // ---------- 화면 ----------
 let CATALOG = [];
 
-function openCatalog() {
-  $("catalogPanel").hidden = false;
-  // 분류 선택지는 목록을 새로 만들 때 갱신
-  CATALOG = buildCatalog();
+// 분류·특징 선택지 (목록을 새로 만들 때 갱신, 고른 값은 유지)
+function fillCatalogFilters() {
   const kinds = [...new Set(CATALOG.map(p => p.kind))].sort();
   const cur = $("catKind").value;
   $("catKind").innerHTML = `<option value="">분류 전체</option>` + kinds.map(k => `<option${k === cur ? " selected" : ""}>${esc(k)}</option>`).join("");
-  const curF = $("catFeature").value;
-  $("catFeature").innerHTML = `<option value="">특징 전체</option>` +
-    FEATURES.map(f => `<option value="${esc(f.id)}"${f.id === curF ? " selected" : ""}>${esc(f.name)}</option>`).join("");
-  renderCatalog();
-  $("catalogPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+  if ($("catFeature").options.length !== FEATURES.length + 1) {
+    const curF = $("catFeature").value;
+    $("catFeature").innerHTML = `<option value="">특징 전체</option>` +
+      FEATURES.map(f => `<option value="${esc(f.id)}"${f.id === curF ? " selected" : ""}>${esc(f.name)}</option>`).join("");
+  }
 }
 
 function filteredCatalog() {
@@ -79,12 +77,14 @@ const docMarks = types => CAT_TYPES.map(([t, s]) => `<span class="dm${types.has(
 const stBadge = st => `<span class="badge ${st === "판매중" ? "on" : st === "판매종료" ? "off" : "plan"}">${esc(st)}</span>`;
 
 function renderCatalog() {
-  if ($("catalogPanel").hidden) return;
   if (!DOCS.length) {
-    $("catalogBody").innerHTML = `<p class="empty">기초서류 폴더를 먼저 연결하세요.</p>`;
+    $("catalogBody").innerHTML = `<div class="empty-state"><b>기초서류 폴더가 아직 연결되지 않았습니다</b>
+      start.bat으로 실행하면 지정 폴더가 자동으로 연결되고, 그렇지 않으면 왼쪽 <b style="display:inline">기초서류 연결 → 폴더 선택</b>으로 고릅니다.<br>
+      <button type="button" id="emptyDbBtn">교육용 가상 상품 DB 보기</button></div>`;
     return;
   }
   CATALOG = buildCatalog();
+  fillCatalogFilters();
   const list = filteredCatalog();
   const expand = $("catExpand").checked;
   const pending = DOCS.filter(d => SERVER_MODE && !d.indexed).length;
@@ -142,8 +142,6 @@ function catalogCsv() {
 }
 
 // ---------- 이벤트 ----------
-$("catalogBtn").addEventListener("click", openCatalog);
-$("closeCatalogBtn").addEventListener("click", () => { $("catalogPanel").hidden = true; });
 ["catSearch"].forEach(id => $(id).addEventListener("input", renderCatalog));
 ["catKind", "catStatus", "catFeature", "catExpand"].forEach(id => $(id).addEventListener("change", renderCatalog));
 $("csvCatalogBtn").addEventListener("click", () => download(`product-list_${TODAY}.csv`, catalogCsv()));
