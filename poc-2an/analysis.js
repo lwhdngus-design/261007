@@ -306,7 +306,7 @@ function analyzeProduct(key, start) {
   if (!kinds.length) {
     for (const [k, re] of KIND_WORDS) {
       const h = findLines(base, re, 1).hits[0];
-      if (h) { kinds.push({ label: k, ref: refOf(h), text: h.text }); break; }
+      if (h) { kinds.push({ label: k, ref: refOf(h), text: h.text, hit: h }); break; }
     }
   }
   const flags = [];
@@ -319,7 +319,8 @@ function analyzeProduct(key, start) {
     R.checks.push("[확인 필요] 갱신형과 비갱신형 표현이 함께 있습니다 — 담보별로 다른지 원문 확인: " +
       flags.filter(f => /갱신형/.test(f.label)).map(f => `"${f.text}" (${f.ref})`).join(" / "));
   R.kinds = kinds; R.flags = flags;
-  R.rows.push({ label: "보험종류", lines: [...kinds, ...flags].map(x => ({ text: x.text ? `${x.label} — ${x.text}` : x.label, ref: x.ref })), more: 0 });
+  // hit(문서·쪽)을 함께 넘겨야 근거가 눌림 (상품명에서 판정한 것은 쪽이 없어 글자로만 표시)
+  R.rows.push({ label: "보험종류", lines: [...kinds, ...flags].map(x => ({ text: x.text ? `${x.label} — ${x.text}` : x.label, ref: x.ref, hit: x.hit })), more: 0 });
 
   // 2) 항목별 원문 줄 — 보험금 지급사유·감액·면책은 약관의 '보험금 지급기준표'와 그 주석을 우선 사용
   const tables = attachStructured(payTablesOf(base.filter(d => d.docType === "약관")));
