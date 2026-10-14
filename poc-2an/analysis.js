@@ -403,6 +403,19 @@ function analyzeProduct(key, start) {
   const failed = DOCS.filter(d => productKeyOf(d) === key && d.start === start && d.error);
   failed.forEach(d => R.checks.push(`${d.name}: ${d.error}`));
 
+  // 규칙 기반 판정 중 확신이 낮은 항목 → 표의 항목명 옆 표시 + 확인 필요 목록
+  const lowConf = (label, reason, line) => {
+    R.lowConf = R.lowConf || new Set();
+    R.lowConf.add(label);
+    R.checks.push(`[확신 낮음] ${label} — ${reason}` + (line ? ` : "${line.text.slice(0, 80)}" (${line.ref})` : ""));
+  };
+
+  // 줄 앞의 항목명 (예: "6. 보험금 지급사유: …" → 보험금지급사유, "제3조(보험금의 지급사유) …" → 보험금의지급사유)
+  const lineLabelOf = t => {
+    const m = String(t).match(/^\s*(?:\d{1,2}\s*[.)]\s*)?([^:：()]{2,20})\s*[:：]/) || String(t).match(/^\s*제\s*\d+\s*조\s*\(([^)]{2,20})\)/);
+    return m ? norm(m[1]) : "";
+  };
+
   // 1) 보험종류
   const nameCompact = norm(name);
   const kinds = KIND_WORDS.filter(([, re]) => re.test(nameCompact)).map(([k]) => ({ label: k, ref: "상품명" }));
@@ -422,6 +435,12 @@ function analyzeProduct(key, start) {
     R.checks.push("[확인 필요] 갱신형과 비갱신형 표현이 함께 있습니다 — 담보별로 다른지 원문 확인: " +
       flags.filter(f => /갱신형/.test(f.label)).map(f => `"${f.text}" (${f.ref})`).join(" / "));
   R.kinds = kinds; R.flags = flags;
+  kinds.filter(k => k.ref !== "상품명").forEach(k =>
+    lowConf("보험종류", `상품명에 종류가 없어 본문 단어 '${k.label}'로 판정`, { text: k.text, ref: k.ref }));
+  // 구분 표현은 상품을 정의하는 줄(명칭·구성·유형 등)이나 그 표현으로 시작하는 줄에서 찾았을 때만 믿을 만함
+  const DEFINE_LINE = /명칭|종목|구성|유형|종류|형태|구분|특이사항|상품의특징|해지환급금/;
+  flags.filter(f => !DEFINE_LINE.test(lineLabelOf(f.text)) && !norm(f.text).startsWith(norm(f.label).replace(/\(.*$/, "")))
+    .forEach(f => lowConf("보험종류", `'${f.label}'은 상품 정의 줄이 아닌 본문 문장의 단어로 판정 — 상품 구분을 설명하는 문장인지 확인`, { text: f.text, ref: f.ref }));
   // hit(문서·쪽)을 함께 넘겨야 근거가 눌림 (상품명에서 판정한 것은 쪽이 없어 글자로만 표시)
   R.rows.push({ label: "보험종류", lines: [...kinds, ...flags].map(x => ({ text: x.text ? `${x.label} — ${x.text}` : x.label, ref: x.ref, hit: x.hit })), more: 0 });
 
@@ -453,6 +472,9 @@ function analyzeProduct(key, start) {
       // 지급사유는 첫 번째(주계약) 표만 보여주고 나머지 표 제목을 안내. 감액·면책은 모든 표의 주석에서 찾음
       const extra = def.id === "benefit" && tables.length > 1
         ? "그 밖의 지급기준표: " + tables.slice(1).map(t => `${t.title} (p.${t.page})`).join(", ") : "";
+      if (none) lowConf(def.label, def.id === "reduce"
+        ? "지급기준표 주석에서 '기간 + 감액 비율' 문장을 찾지 못해 '없음'으로 판정 — 표 그림과 주석 확인"
+        : "지급기준표 주석에서 '기간 + 지급하지 않음' 문장을 찾지 못해 '없음'으로 판정 — 표 그림과 주석 확인");
       R.rows.push({ id: def.id, label: def.label, lines, more, none, fromTable: true, extra,
                     images: def.id === "benefit" ? main.images || [] : [] });
       if (!lines.length && !none) R.checks.push(`${def.label}: 지급기준표에서 표 내용을 읽지 못함 (약관 p.${main.page} 원문 확인)`);
@@ -482,6 +504,11 @@ function analyzeProduct(key, start) {
     }
     if (!hits.length) ({ hits, more } = findLines(base, def.re, 3, def.exclude));
     R.rows.push({ id: def.id, label: def.label, lines: hits.map(h => ({ text: h.text, ref: refOf(h), hit: h })), more });
+    // 항목명이 붙은 줄을 못 찾아 문장 검색으로 찾았는데, 그 줄이 다른 항목명으로 시작하면 다른 내용일 가능성이 큼
+    const own = new RegExp(def.words || def.label.replace(/[·\s]/g, "|"));
+    const foreign = !labelled && def.id !== "etc" ? hits.find(h => { const lb = lineLabelOf(h.text); return lb && !own.test(lb); }) : null;
+    if (foreign)
+      lowConf(def.label, `항목명 줄을 못 찾아 문장 검색으로 찾았고, 그 줄은 '${lineLabelOf(foreign.text)}' 항목의 줄 — 다른 내용일 수 있음`, { text: foreign.text, ref: refOf(foreign) });
     if (!hits.length) R.checks.push(`${def.label}: 문서 내 확인 불가`);
     // 사업방법서·상품요약서·약관 중 2개 이상에 나온 항목은 숫자를 대조해 다르면 확인 필요
     if (def.compare && labelled) {
@@ -575,7 +602,7 @@ async function showAnalysis(key, start) {
   $("analysisTitle").textContent = `상품 분석 — ${R.name}`;
   $("analysisVersion").innerHTML = versions.map(v => `<option value="${esc(v)}"${v === start ? " selected" : ""}>판매개시일 ${esc(v || "미상")}</option>`).join("");
   const rows = R.rows.map(r => `<tr>
-      <td>${esc(r.label)}</td>
+      <td>${esc(r.label)}${R.lowConf && R.lowConf.has(r.label) ? `<span class="lowconf" title="규칙 판정 확신 낮음 — 아래 확인 필요 항목 참고">확신 낮음</span>` : ""}</td>
       <td>${r.images && r.images.length ? tableImagesHtml(r, `${R.name} (${R.start || "미상"}) ${r.section ? "사업방법서 " + r.section : "보험금 지급기준표"}`) : r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
         + (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "")
  : `<span class="na">${esc(emptyText(r))}</span>`}</td>
@@ -589,8 +616,8 @@ async function showAnalysis(key, start) {
     <h3>유의사항</h3>
     ${R.cautions.length ? `<ul>${R.cautions.map(l => `<li>${lineHtml(l)}</li>`).join("")}</ul>` : `<p class="na">문서에서 유의 조건 줄을 찾지 못했습니다.</p>`}
     <h3>확인 필요 항목</h3>
-    ${R.checks.length ? `<ul>${R.checks.map(c => `<li class="${c.startsWith("[확인 필요]") ? "check" : ""}">${esc(c)}</li>`).join("")}</ul>` : `<p class="na">없음</p>`}
-    <p class="note">※ 규칙 기반 자동 추출입니다. 항목 분류가 틀릴 수 있으니 근거 페이지를 눌러 원문을 확인하세요. 담보·형별 구분은 원문 줄에 적힌 그대로 보여줍니다.</p>`;
+    ${R.checks.length ? `<ul>${R.checks.map(c => `<li class="${c.startsWith("[확인 필요]") ? "check" : c.startsWith("[확신 낮음]") ? "low" : ""}">${esc(c)}</li>`).join("")}</ul>` : `<p class="na">없음</p>`}
+    <p class="note">※ 규칙 기반 자동 추출입니다. [확신 낮음]은 항목명·목차·지급기준표가 아니라 본문 단어나 문장 검색으로 판정한 항목입니다. 항목 분류가 틀릴 수 있으니 근거 페이지를 눌러 원문을 확인하세요. 담보·형별 구분은 원문 줄에 적힌 그대로 보여줍니다.</p>`;
   $("analysisPanel").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 

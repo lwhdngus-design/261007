@@ -145,14 +145,14 @@ function renderCompare() {
           (list.length > MAX_DIFF_LINES ? `<p class="note">외 ${list.length - MAX_DIFF_LINES}줄 — [엑셀 저장]에는 전부 들어갑니다.</p>` : "");
       }).join("");
   }
-  const checks = results.flatMap(R => R.checks.filter(c => c.startsWith("[확인 필요]") || c.includes("파일이 없어")).map(c => `${R.name} (${R.start}): ${c}`));
+  const checks = results.flatMap(R => R.checks.filter(c => c.startsWith("[확인 필요]") || c.startsWith("[확신 낮음]") || c.includes("파일이 없어")).map(c => `${R.name} (${R.start}): ${c}`));
   $("compareBody").innerHTML = `
     ${results.some(R => (R.rows.find(r => r.id === "benefit") || {}).images?.length)
       ? `<div class="buttons" style="margin-bottom:8px"><button type="button" class="primary" id="sideBySideBtn">지급기준표 나란히 보기</button></div>` : ""}
     <p class="summary">${labels.length}개 항목 중 <b>${diffCount}</b>개 항목이 다릅니다. (원문 줄 기준 자동 판정 — 근거를 눌러 원문 확인)</p>
     <div class="table-scroll"><table class="facts compare"><thead>${head}</thead><tbody>${body || `<tr><td colspan="${results.length + 2}" class="empty">다른 항목이 없습니다.</td></tr>`}</tbody></table></div>
     ${diffHtml}
-    ${checks.length ? `<h3>확인 필요</h3><ul>${checks.map(c => `<li class="check">${esc(c)}</li>`).join("")}</ul>` : ""}`;
+    ${checks.length ? `<h3>확인 필요</h3><ul>${checks.map(c => `<li class="${c.includes("[확신 낮음]") ? "low" : "check"}">${esc(c)}</li>`).join("")}</ul>` : ""}`;
 }
 
 // ---------- 내보내기 ----------

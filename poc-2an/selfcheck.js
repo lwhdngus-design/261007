@@ -74,6 +74,13 @@ const CHECKS = [
       const miss = lines.filter(l => !/p\.\d+/.test(l.ref || "") && l.ref !== "상품명").length;
       return `누락 ${miss}줄`;
     } },
+  { req: "주요 내용 정리", name: "규칙 판정 확신 낮음 표시 — 같은 분석 ('금리연동형'이 연체이율 문장의 '공시이율'로 판정됨)", expect: "보험종류, 면책, 감액",
+    run: async () => {
+      const R = await analyzed("두단계", "2025-01-01");
+      const labels = [...(R.lowConf || [])];
+      const listed = R.checks.filter(c => c.startsWith("[확신 낮음]")).length;
+      return listed >= labels.length ? labels.join(", ") : `표시 ${labels.length}개 · 목록 ${listed}개`;
+    } },
   { req: "근거 원문 연결", name: "개정 전후 비교 2023-07-01 → 2025-01-01 (상품요약서)", expect: "납입기간 줄 '변경'",
     run: async () => {
       const key = sampleKey("두단계");
