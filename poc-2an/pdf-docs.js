@@ -67,6 +67,8 @@ function productNameOf(fileName) {
   s = s.replace(/[\[【〔［][^\]】〕］]*[\]】〕］]/g, " ");
   for (const d of findDates(s).reverse()) s = s.slice(0, d.s) + " " + s.slice(d.e);
   for (const t of DOC_WORDS) s = s.split(t).join(" ");
+  // "(계약자용)", "_계약자용" 등은 같은 상품으로 봄 → 상품명에서 제외
+  s = s.replace(/[(（]\s*계약자\s*용\s*[)）]|계약자\s*용/g, " ");
   s = s.replace(/(보통|특별)\s*$/, "").replace(/[_\-\s~]+/g, " ").trim();
   return s;
 }
