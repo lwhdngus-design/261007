@@ -30,9 +30,12 @@ function renderTray(message = "") {
 // ---------- 항목 비교 ----------
 // 행 상태: 같음 / 숫자 다름 / 표현 다름 / 일부 확인 불가 / 모두 확인 불가
 function rowStatus(label, results) {
-  const cells = results.map(R => R.rows.find(r => r.label === label).lines);
+  // 감액·면책 '없음'도 비교 가능한 값으로 취급
+  const cells = results.map(R => { const r = R.rows.find(x => x.label === label); return r.none ? [{ text: "없음" }] : r.lines; });
   if (cells.every(ls => !ls.length)) return { cls: "none", text: "모두 확인 불가" };
   if (cells.some(ls => !ls.length)) return { cls: "diff", text: "일부 확인 불가" };
+  const isNone = ls => ls.length === 1 && ls[0].text === "없음";
+  if (cells.some(isNone) && !cells.every(isNone)) return { cls: "diff", text: "있음/없음 다름" };
   if (label === "보험종류") {
     const sets = results.map(R => [...R.kinds, ...R.flags].map(x => x.label).sort().join("|"));
     return new Set(sets).size === 1 ? { cls: "same", text: "같음" } : { cls: "diff", text: "구분 다름" };
@@ -88,7 +91,9 @@ async function showCompare() {
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
   const items = [...TRAY].sort((x, y) => (x.key === y.key ? (x.start || "").localeCompare(y.start || "") : 0));
   try {
-    await ensurePages(DOCS.filter(d => items.some(t => productKeyOf(d) === t.key && d.start === t.start)));
+    const cdocs = DOCS.filter(d => items.some(t => productKeyOf(d) === t.key && d.start === t.start));
+    await ensurePages(cdocs);
+    await prepareTables(cdocs);
   } catch (e) {
     $("compareBody").innerHTML = `<p class="warn">본문을 불러오지 못했습니다: ${esc(e.message)}</p>`;
     return;
@@ -115,7 +120,7 @@ function renderCompare() {
     const cells = results.map(R => {
       const row = R.rows.find(r => r.label === label);
       return `<td>${row.lines.length ? row.lines.map(lineHtml).join("") + (row.more > 0 ? `<p class="note">외 ${row.more}줄</p>` : "")
-        : `<span class="na">문서 내 확인 불가</span>`}</td>`;
+        : `<span class="na">${esc(emptyText(row))}</span>`}</td>`;
     }).join("");
     return `<tr class="cmp-${st.cls}"><td>${esc(label)}</td>${cells}<td><span class="badge ${st.cls === "same" ? "on" : st.cls === "none" ? "off" : "plan"}">${esc(st.text)}</span></td></tr>`;
   }).join("");
@@ -147,7 +152,7 @@ function renderCompare() {
 }
 
 // ---------- 내보내기 ----------
-const cellText = row => row.lines.length ? row.lines.map(l => `${l.text} (${l.ref})`).join(" / ") : "문서 내 확인 불가";
+const cellText = row => row.lines.length ? row.lines.map(l => `${l.text} (${l.ref})`).join(" / ") : emptyText(row);
 
 function compareMarkdown() {
   const { results, diff } = LAST_COMPARE;

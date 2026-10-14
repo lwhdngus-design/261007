@@ -12,8 +12,9 @@ const ITEM_DEFS = [
   { id: "age", label: "가입나이", re: /가입나이|가입연령|가입가능나이|가입가능연령/, labelRe: /(가입나이|가입연령)[:：]/, words: "가입나이|가입연령", compare: true },
   { id: "limit", label: "가입한도", re: /가입한도|가입금액|최저보험료|최고보험료|보험료한도|가입가능금액/, labelRe: /(가입한도|가입금액|보험료한도)[:：]/ },
   { id: "benefit", label: "보험금 지급사유", re: /지급사유|보험금을지급|지급합니다|지급하는경우/, exclude: /지급하지않|면책/ },
-  { id: "exempt", label: "면책", re: /면책|지급하지않|보장개시|부책/ },
-  { id: "reduce", label: "감액", re: /감액/ },
+  // 지급기준표를 못 찾았을 때만 쓰는 규칙 (기간 + 지급하지 않음 / 기간 + 비율)
+  { id: "exempt", label: "면책", re: /면책기간|부담보|((\d+년|\d+개월|\d+일)(미만|이내|동안)|보장개시일).{0,80}(지급하지않|보장하지않|면책)|(\d+일|\d+년)(이|을)?지난날의다음날/ },
+  { id: "reduce", label: "감액", re: /((\d+년|\d+개월)(미만|이내)).{0,80}(\d+%|감액)|(\d+%|감액).{0,40}(\d+년|\d+개월)(미만|이내)/ },
   { id: "withdraw", label: "중도인출", re: /중도인출/ },
   { id: "extra", label: "추가납입", re: /추가납입/ },
   { id: "etc", label: "기타", re: /해지환급금|갱신|배당|납입면제|특약|저해지|무해지/ },
@@ -46,7 +47,7 @@ function findLines(docs, re, perDoc = 3, exclude = null) {
   for (const d of docs) {
     let n = 0;
     for (const l of docLines(d)) {
-      if (!re.test(l.compact) || (exclude && exclude.test(l.compact))) continue;
+      if (!re.test(l.compact) || (exclude && exclude.test(l.compact)) || isTocLine(l.text) || PAYTABLE_HEAD.test(l.compact)) continue;
       const text = lineText(l), k = norm(text);
       // 같은 줄, 또는 앞의 제목 줄에 이미 붙어 나온 줄은 건너뜀
       if (seen.has(k) || [...seen].some(x => x.includes(k))) continue;
@@ -55,6 +56,164 @@ function findLines(docs, re, perDoc = 3, exclude = null) {
     }
   }
   return { hits, more: total - hits.length };
+}
+
+// 목차 줄: "제5조【보험금을 지급하지 않는 사유】 ........27" 처럼 점선 뒤 쪽번호
+const isTocLine = t => /[.·…ㆍ‥]{4,}\s*\d*\s*$/.test(t) || /[.·…]{6,}/.test(t);
+
+// ---------- 약관의 보험금 지급기준표 ----------
+// 감액: "1년 미만 … 50%"처럼 기간 + 비율(또는 '감액'), 면책: 기간/보장개시일 + 지급하지 않음·면책
+const REDUCE_RE = /((\d+년|\d+개월|\d+일)(미만|이내|이전|까지|동안)|보장개시일.{0,20}(\d+년|\d+개월)).{0,80}(\d+(\.\d+)?%|감액|절반)|(\d+(\.\d+)?%|감액).{0,40}(\d+년|\d+개월)(미만|이내)/;
+const EXEMPT_RE = /((\d+년|\d+개월|\d+일)(미만|이내|동안|이전|까지)|보장개시일|책임개시일).{0,80}(지급하지않|보장하지않|면책|책임을지지않|해당하지않|보상하지않)|면책기간|부담보|보장개시일[은는].{0,40}(\d+일|\d+년|\d+개월)(이|을)?지난|(\d+일|\d+년|\d+개월)(이|을)?지난날의다음날/;
+const PAYTABLE_HEAD = /보험금\s*지급\s*기준\s*표/;
+// 표 제목 줄: "지급기준표"로 끝나는 짧은 줄 ("…지급기준표에서 정한 보험금" 같은 본문 조각은 제외)
+const isPayTableTitle = l => PAYTABLE_HEAD.test(l.compact) && !isTocLine(l.text) && l.compact.length <= 40 &&
+  /보험금지급기준표[)\]】>]*$/.test(l.compact.replace(/\([^)]*\)$/, ""));
+const NOTE_START = /^\s*(\(?주\s*\d*\)|주\s*\d*[).:：]|주\s*\d+\s|※|\*|<\s*주|【\s*주|\[\s*주)/;
+const TABLE_END = /^\s*(【\s*(부\s*표|별\s*표)|\[\s*(부\s*표|별\s*표)|<\s*(부\s*표|별\s*표)|부\s*표\s*\d|별\s*표\s*\d|제\s*\d+\s*관|제\s*\d+\s*조\s*[\[(【(])/;
+const MAX_TABLE_LINES = 160;
+
+function payTablesOf(docs) {
+  const tables = [];
+  for (const d of docs) {
+    const lines = docLines(d);
+    for (let i = 0; i < lines.length; i++) {
+      const head = lines[i];
+      // 제목 줄만 (본문 속 "보험금 지급기준표에서 정한…" 문장과 목차 줄은 제외)
+      if (!isPayTableTitle(head)) continue;
+      const rows = [], notes = [];
+      let inNotes = false, j = i + 1;
+      for (; j < lines.length && j < i + MAX_TABLE_LINES; j++) {
+        const l = lines[j];
+        if (isPayTableTitle(l)) break; // 다음 지급기준표
+        if (j > i + 1 && TABLE_END.test(l.text)) break;
+        if (isTocLine(l.text)) continue;
+        if (NOTE_START.test(l.text)) { inNotes = true; notes.push({ text: l.text, page: l.page, doc: d }); continue; }
+        if (inNotes) {
+          // 주석이 여러 줄이면 앞 주석에 이어 붙임
+          const last = notes[notes.length - 1];
+          if (last && last.text.length < 600) last.text += " " + l.text;
+          continue;
+        }
+        if (/^(급부명|급부명칭|지급사유|지급금액|보장명|구\s*분|\(기준|기준\s*:)/.test(l.text.replace(/\s+/g, " "))) continue; // 표 머리
+        rows.push({ text: l.text, page: l.page, doc: d });
+      }
+      if (rows.length || notes.length) tables.push({ doc: d, page: head.page, title: head.text, rows, notes });
+      i = j - 1;
+    }
+  }
+  return tables;
+}
+
+// 항목이 비었을 때 문구: 지급기준표에서 감액·면책 조건이 없으면 "없음", 그 밖에는 "문서 내 확인 불가"
+const NONE_TEXT = "없음 (보험금 지급기준표와 주석에 해당 조건 없음)";
+const emptyText = r => (r.none ? NONE_TEXT : "문서 내 확인 불가");
+
+// ---------- 지급기준표 칸 복원 (글자 위치로 행·열 다시 맞춤) ----------
+// 지급기준표가 있는 쪽만 PDF를 다시 읽어, 머리행(급부명칭·지급사유·지급금액)의 가로 위치로 열을 나누고
+// 세로 간격이 넓은 곳에서 행을 나눔 → "사망보험금 | 피보험자가 사망하였을 때 | 보험가입금액"
+function structurePage(items, pageNo, st) {
+  const lines = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim() || !it.transform) continue;
+    const x = it.transform[4], y = it.transform[5];
+    let line = lines.find(l => Math.abs(l.y - y) <= 2);
+    if (!line) lines.push(line = { y, items: [] });
+    line.items.push({ x, w: it.width || 0, str: it.str });
+  }
+  // 글자 조각 잇기: 간격이 좁으면 붙이고(한 글자씩 저장된 PDF 대비), 넓으면 띄움
+  const join = its => its.reduce((acc, it, i) => {
+    const prev = its[i - 1];
+    return acc + (prev && it.x - (prev.x + prev.w) > 2.5 ? " " : "") + it.str;
+  }, "").replace(/\s+/g, " ").trim();
+  lines.sort((a, b) => b.y - a.y); // 위 → 아래
+  for (const l of lines) {
+    l.items.sort((a, b) => a.x - b.x);
+    l.text = join(l.items);
+    l.compact = norm(l.text);
+  }
+  const flush = () => {
+    const seg = st.cur;
+    if (!seg || !seg.raw.length) return;
+    const gaps = seg.raw.slice(1).map((l, i) => seg.raw[i].y - l.y).filter(g => g > 0.5);
+    const min = Math.min(...gaps), max = Math.max(...gaps);
+    const rows = [];
+    let row = null;
+    seg.raw.forEach((l, i) => {
+      const gap = i ? seg.raw[i - 1].y - l.y : Infinity;
+      // 간격이 모두 비슷하면 줄마다 한 행, 아니면 넓은 간격에서 행 나눔
+      const newRow = !row || l.page !== row.page || !gaps.length || max / min < 1.25 || gap > min * 1.35;
+      if (newRow) rows.push(row = { page: l.page, cells: seg.cols.map(() => []) });
+      const parts = seg.cols.map(() => []);
+      l.items.forEach(it => {
+        let c = 0;
+        seg.cols.forEach((cx, k) => { if (it.x + 4 >= cx) c = k; });
+        parts[c].push(it);
+      });
+      parts.forEach((its, c) => { if (its.length) row.cells[c].push(join(its)); });
+    });
+    // 칸 안에서 줄이 바뀐 글자는 이어 붙임 (한글은 붙여서, 그 밖은 띄어서)
+    const cellText = lines => lines.reduce((acc, t) => acc + (acc && !/[가-힣(]$/.test(acc) || /^[A-Za-z0-9]/.test(t) ? " " : "") + t, "");
+    seg.rows.push(...rows.map(r => ({ page: r.page, text: r.cells.map(c => cellText(c).trim()).filter(Boolean).join(" | ") }))
+      .filter(r => r.text));
+    seg.raw = [];
+  };
+  for (const l of lines) {
+    if (isPayTableTitle(l)) { flush(); st.segs.push(st.cur = { title: l.text, page: pageNo, cols: null, raw: [], rows: [] }); st.inNotes = false; continue; }
+    if (!st.cur) continue;
+    if (NOTE_START.test(l.text)) { flush(); st.inNotes = true; continue; }
+    if (/지급사유/.test(l.compact) && /지급금액|지급액|보험금액/.test(l.compact) && l.compact.length < 60) {
+      flush();
+      // 머리행 글자 위치 = 열 시작점 (가까운 조각은 하나로)
+      // 머리행에서 글자 사이 빈칸이 넓은 곳 = 칸 경계
+      const xs = [];
+      l.items.forEach((i, k) => { const prev = l.items[k - 1]; if (!prev || i.x - (prev.x + prev.w) > 8) xs.push(i.x); });
+      st.cur.cols = xs; st.inNotes = false;
+      continue;
+    }
+    if (st.inNotes || !st.cur.cols) continue;
+    if (TABLE_END.test(l.text)) { flush(); st.cur = null; continue; }
+    st.cur.raw.push({ ...l, page: pageNo });
+  }
+  flush();
+}
+
+async function prepareTables(docs) {
+  for (const d of docs) {
+    if (d.docType !== "약관" || d._tableSegs !== undefined) continue;
+    const tables = payTablesOf([d]);
+    d._tableSegs = null;
+    if (!tables.length) continue;
+    const pages = [...new Set(tables.flatMap(t => [t.page, ...t.rows.map(r => r.page), ...t.notes.map(n => n.page)]))].sort((a, b) => a - b);
+    try {
+      const data = d.file ? new Uint8Array(await d.file.arrayBuffer()) : new Uint8Array(await (await fetch(d.url)).arrayBuffer());
+      const pdf = await pdfjsLib.getDocument({ data, CMapReaderFactory: EmbeddedCMapReaderFactory, cMapPacked: true }).promise;
+      const st = { segs: [], cur: null, inNotes: false };
+      let prev = null;
+      for (const p of pages) {
+        if (prev !== null && p !== prev + 1) { st.cur = null; } // 떨어진 쪽은 이어 붙이지 않음
+        const page = await pdf.getPage(p);
+        structurePage((await page.getTextContent()).items, p, st);
+        page.cleanup();
+        prev = p;
+      }
+      await pdf.destroy();
+      d._tableSegs = st.segs;
+    } catch (e) {
+      d._tableSegs = null; // 실패하면 줄 단위 결과 사용
+    }
+  }
+}
+
+// 줄 단위로 찾은 표와 칸 복원 결과를 순서대로 짝지음
+function attachStructured(tables) {
+  const byDoc = new Map();
+  tables.forEach(t => { if (!byDoc.has(t.doc)) byDoc.set(t.doc, []); byDoc.get(t.doc).push(t); });
+  for (const [d, ts] of byDoc) {
+    const segs = d._tableSegs || [];
+    ts.forEach((t, i) => { if (segs[i] && segs[i].rows.length) t.structRows = segs[i].rows.map(r => ({ ...r, doc: d })); });
+  }
+  return tables;
 }
 
 const refOf = h => `${h.doc.docType} p.${h.page}`;
@@ -107,14 +266,44 @@ function analyzeProduct(key, start) {
   R.kinds = kinds; R.flags = flags;
   R.rows.push({ label: "보험종류", lines: [...kinds, ...flags].map(x => ({ text: x.text ? `${x.label} — ${x.text}` : x.label, ref: x.ref })), more: 0 });
 
-  // 2) 항목별 원문 줄
+  // 2) 항목별 원문 줄 — 보험금 지급사유·감액·면책은 약관의 '보험금 지급기준표'와 그 주석을 우선 사용
+  const tables = attachStructured(payTablesOf(base.filter(d => d.docType === "약관")));
+  R.payTables = tables;
+  const tRef = x => `약관 p.${x.page} 지급기준표${x.note ? " 주석" : ""}`;
+  if (!tables.length && base.some(d => d.docType === "약관"))
+    R.checks.push("약관에서 '보험금 지급기준표'를 찾지 못해 지급사유·감액·면책은 본문 문장에서 찾았습니다 (정확도 낮음).");
+  const tLine = x => ({ text: x.text.slice(0, 400), ref: tRef(x), hit: { doc: x.doc, page: x.page } });
   for (const def of ITEM_DEFS) {
+    if (tables.length && ["benefit", "reduce", "exempt"].includes(def.id)) {
+      const main = tables[0]; // 첫 번째 지급기준표 = 주계약
+      const notes = tables.flatMap(t => t.notes.map(n => ({ ...n, note: true })));
+      const rowsAll = tables.flatMap(t => t.structRows || t.rows);
+      let lines, more = 0, none = false;
+      if (def.id === "benefit") {
+        const mainRows = main.structRows || main.rows;
+        lines = mainRows.slice(0, 10).map(tLine);
+        more = mainRows.length - lines.length;
+      } else {
+        const re = def.id === "reduce" ? REDUCE_RE : EXEMPT_RE;
+        const found = [...notes, ...rowsAll].filter(x => re.test(norm(x.text)));
+        lines = found.slice(0, 6).map(tLine);
+        more = found.length - lines.length;
+        none = !found.length;
+      }
+      // 지급사유는 첫 번째(주계약) 표만 보여주고 나머지 표 제목을 안내. 감액·면책은 모든 표의 주석에서 찾음
+      const extra = def.id === "benefit" && tables.length > 1
+        ? "그 밖의 지급기준표: " + tables.slice(1).map(t => `${t.title} (p.${t.page})`).join(", ") : "";
+      R.rows.push({ id: def.id, label: def.label, lines, more, none, fromTable: true, extra });
+      if (!lines.length && !none) R.checks.push(`${def.label}: 지급기준표에서 표 내용을 읽지 못함 (약관 p.${main.page} 원문 확인)`);
+      continue;
+    }
     let { hits, more } = def.labelRe ? findLines(base, def.labelRe) : { hits: [] };
+    const labelled = hits.length > 0;
     if (!hits.length) ({ hits, more } = findLines(base, def.re, 3, def.exclude));
     R.rows.push({ id: def.id, label: def.label, lines: hits.map(h => ({ text: h.text, ref: refOf(h), hit: h })), more });
     if (!hits.length) R.checks.push(`${def.label}: 문서 내 확인 불가`);
     // 사업방법서·상품요약서·약관 중 2개 이상에 나온 항목은 숫자를 대조해 다르면 확인 필요
-    if (def.compare) {
+    if (def.compare && labelled) {
       const byType = SOURCE_TYPES.map(t => hits.filter(h => h.doc.docType === t)).filter(x => x.length);
       if (byType.length > 1) {
         const sets = byType.map(x => numbersOf(x.map(h => itemSegment(h.text, def.words))).join());
@@ -156,7 +345,9 @@ async function showAnalysis(key, start) {
   $("analysisPanel").hidden = false;
   $("analysisBody").innerHTML = `<p class="note">문서 본문을 불러오는 중…</p>`;
   try {
-    await ensurePages(DOCS.filter(d => productKeyOf(d) === key && d.start === start));
+    const vdocs = DOCS.filter(d => productKeyOf(d) === key && d.start === start);
+    await ensurePages(vdocs);
+    await prepareTables(vdocs);
   } catch (e) {
     $("analysisBody").innerHTML = `<p class="warn">본문을 불러오지 못했습니다: ${esc(e.message)}</p>`;
     return;
@@ -169,7 +360,8 @@ async function showAnalysis(key, start) {
   const rows = R.rows.map(r => `<tr>
       <td>${esc(r.label)}</td>
       <td>${r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
- : `<span class="na">문서 내 확인 불가</span>`}</td>
+        + (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "")
+ : `<span class="na">${esc(emptyText(r))}</span>`}</td>
       <td>${r.lines.length ? esc([...new Set(r.lines.map(l => l.ref))].join(", ")) : "-"}</td>
     </tr>`).join("");
   $("analysisBody").innerHTML = `
@@ -190,7 +382,7 @@ function analysisMarkdown(R) {
   const cell = s => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
   return [`# 상품 분석 — ${R.name} (판매개시일 ${R.start || "미상"})`, "", "### 한눈에 보기", ...R.overview, "",
     "### 핵심 특징 표", "| 항목 | 내용 | 문서 근거(페이지/조항) |", "|---|---|---|",
-    ...R.rows.map(r => `| ${r.label} | ${r.lines.length ? cell(r.lines.map(l => l.text).join(" / ")) : "문서 내 확인 불가"} | ${cell([...new Set(r.lines.map(l => l.ref))].join(", ")) || "-"} |`),
+    ...R.rows.map(r => `| ${r.label} | ${r.lines.length ? cell(r.lines.map(l => l.text).join(" / ")) : emptyText(r)} | ${cell([...new Set(r.lines.map(l => l.ref))].join(", ")) || "-"} |`),
     "", "### 유의사항", ...(R.cautions.length ? R.cautions.map(l => `- ${l.text} (${l.ref})`) : ["- 문서에서 찾지 못함"]),
     "", "### 확인 필요 항목", ...(R.checks.length ? R.checks.map(c => `- ${c}`) : ["- 없음"])].join("\n");
 }
