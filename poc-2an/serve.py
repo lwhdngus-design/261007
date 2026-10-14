@@ -39,7 +39,8 @@ def norm(s):
 # ---------- 폴더 설정 ----------
 def ask_folder():
     while True:
-        raw = input("기초서류 PDF 폴더 경로를 붙여넣고 Enter (예: C:\\Users\\user\\Desktop\\App_261014\\doc_sample_2026\\2026)\n> ")
+        raw = input("기초서류 PDF 폴더 경로를 붙여넣고 Enter\n"
+                    "(탐색기에서 기초서류 폴더를 열고 주소창 경로를 복사. 예: C:\\Users\\user\\Desktop\\App_261014\\doc_sample)\n> ")
         p = Path(raw.strip().strip('"'))
         if p.is_dir():
             return p
@@ -212,7 +213,9 @@ def list_docs(root):
         tags = {}
         for doc_id, fid, ev in c.execute("SELECT doc_id, feature_id, evidence FROM tags"):
             tags.setdefault(doc_id, {})[fid] = json.loads(ev)
-    gone = [r[0] for p, r in rows.items() if p not in on_disk]
+    # 지금 폴더 안에서 없어진 파일만 색인에서 뺌 (다른 폴더의 색인은 그대로 둠 → 폴더를 바꿔도 다시 읽지 않음)
+    prefix = root.name + "/"
+    gone = [r[0] for p, r in rows.items() if p.startswith(prefix) and p not in on_disk]
     if gone:
         with WRITE_LOCK, connect() as c:
             for doc_id in gone:
