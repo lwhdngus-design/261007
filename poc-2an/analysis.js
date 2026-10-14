@@ -1,7 +1,8 @@
 // 상품 분석 — 사업방법서·상품요약서에서 핵심 특징을 '원문 그대로' 뽑아 정해진 형식으로 보여줌 (오프라인 규칙 기반)
 // 원칙: 문서에 있는 줄만 인용(요약·환산·추측 없음), 못 찾으면 "문서 내 확인 불가", 문서끼리 숫자가 다르면 [확인 필요]
 
-const PRIMARY_TYPES = ["사업방법서", "상품요약서"];
+// 분석 대상 문서 (이 순서로 보여줌). 산출방법서는 계산식 위주라 제외
+const SOURCE_TYPES = ["사업방법서", "상품요약서", "약관"];
 
 // 추출 항목: 공백 제거한 원문 줄에 정규식 적용
 const ITEM_DEFS = [
@@ -74,12 +75,14 @@ function productVersions(key) {
 
 function analyzeProduct(key, start) {
   const all = DOCS.filter(d => productKeyOf(d) === key && d.start === start && !d.error);
-  const primary = all.filter(d => PRIMARY_TYPES.includes(d.docType)).sort(byDocPriority);
-  const secondary = all.filter(d => !PRIMARY_TYPES.includes(d.docType)).sort(byDocPriority);
+  const sources = all.filter(d => SOURCE_TYPES.includes(d.docType)).sort(byDocPriority);
+  const others = all.filter(d => !SOURCE_TYPES.includes(d.docType) && d.docType !== "산출방법서").sort(byDocPriority);
   const name = (all[0] || DOCS.find(d => productKeyOf(d) === key) || {}).productName || key;
-  const R = { key, start, name, primary, secondary, rows: [], checks: [], cautions: [] };
-  const base = primary.length ? primary : secondary;
-  if (!primary.length) R.checks.push(`이 판매일자에 사업방법서·상품요약서가 없어 ${secondary.map(d => d.docType).join("·") || "다른 문서"} 기준으로 추출했습니다.`);
+  const base = sources.length ? sources : others;
+  const R = { key, start, name, base, rows: [], checks: [], cautions: [] };
+  const missing = SOURCE_TYPES.filter(t => !base.some(d => d.docType === t));
+  if (missing.length) R.checks.push(`이 판매일자 폴더에 ${missing.join("·")} 파일이 없어 해당 문서 내용은 반영되지 않았습니다.`);
+  if (!sources.length && others.length) R.checks.push(`사업방법서·상품요약서·약관을 찾지 못해 ${others.map(d => d.name).join(", ")} 기준으로 추출했습니다.`);
   const failed = DOCS.filter(d => productKeyOf(d) === key && d.start === start && d.error);
   failed.forEach(d => R.checks.push(`${d.name}: ${d.error}`));
 
@@ -108,20 +111,14 @@ function analyzeProduct(key, start) {
   for (const def of ITEM_DEFS) {
     let { hits, more } = def.labelRe ? findLines(base, def.labelRe) : { hits: [] };
     if (!hits.length) ({ hits, more } = findLines(base, def.re, 3, def.exclude));
-    let fallback = false;
-    if (!hits.length && primary.length && secondary.length) {
-      ({ hits, more } = def.labelRe ? findLines(secondary, def.labelRe) : { hits: [] });
-      if (!hits.length) ({ hits, more } = findLines(secondary, def.re, 3, def.exclude));
-      fallback = hits.length > 0;
-    }
-    R.rows.push({ id: def.id, label: def.label, lines: hits.map(h => ({ text: h.text, ref: refOf(h), hit: h })), more, fallback });
+    R.rows.push({ id: def.id, label: def.label, lines: hits.map(h => ({ text: h.text, ref: refOf(h), hit: h })), more });
     if (!hits.length) R.checks.push(`${def.label}: 문서 내 확인 불가`);
-    // 사업방법서와 상품요약서의 숫자가 다르면 확인 필요
-    if (def.compare && primary.length > 1) {
-      const byType = PRIMARY_TYPES.map(t => hits.filter(h => h.doc.docType === t));
-      if (byType.every(x => x.length)) {
-        const [a, b] = byType.map(x => numbersOf(x.map(h => itemSegment(h.text, def.words))));
-        if (a.join() !== b.join())
+    // 사업방법서·상품요약서·약관 중 2개 이상에 나온 항목은 숫자를 대조해 다르면 확인 필요
+    if (def.compare) {
+      const byType = SOURCE_TYPES.map(t => hits.filter(h => h.doc.docType === t)).filter(x => x.length);
+      if (byType.length > 1) {
+        const sets = byType.map(x => numbersOf(x.map(h => itemSegment(h.text, def.words))).join());
+        if (new Set(sets).size > 1)
           R.checks.push(`[확인 필요] ${def.label}: 문서 간 숫자가 다릅니다 — ` + byType.map(x => `"${x[0].text}" (${refOf(x[0])})`).join(" / "));
       }
     }
@@ -164,7 +161,7 @@ function showAnalysis(key, start) {
   const rows = R.rows.map(r => `<tr>
       <td>${esc(r.label)}</td>
       <td>${r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
-        + (r.fallback ? `<p class="note">사업방법서·상품요약서에 없어 약관 등에서 인용</p>` : "") : `<span class="na">문서 내 확인 불가</span>`}</td>
+ : `<span class="na">문서 내 확인 불가</span>`}</td>
       <td>${r.lines.length ? esc([...new Set(r.lines.map(l => l.ref))].join(", ")) : "-"}</td>
     </tr>`).join("");
   $("analysisBody").innerHTML = `
@@ -192,7 +189,7 @@ function analysisMarkdown(R) {
 
 // 사용자가 준 분석 프롬프트 + 문서 본문 (사내 승인된 AI에 직접 붙여넣는 용도. 앱은 아무것도 전송하지 않음)
 const ANALYSIS_PROMPT = `당신은 보험상품 문서를 분석하는 보험 상품 분석 전문가입니다.
-아래 [문서]는 보험 상품의 사업방법서 또는 상품요약서입니다.
+아래 [문서]는 보험 상품의 사업방법서·상품요약서·약관입니다.
 이 문서에서 상품의 핵심 특징을 추출해 [출력 형식]에 맞춰 요약하세요.
 
 ## 작성 원칙
@@ -247,7 +244,7 @@ const ANALYSIS_PROMPT = `당신은 보험상품 문서를 분석하는 보험 �
 `;
 
 function promptWithDocs(R) {
-  const docs = R.primary.length ? R.primary : R.secondary;
+  const docs = R.base;
   return ANALYSIS_PROMPT + docs.map(d =>
     `--- ${d.docType}: ${d.path} ---\n` + d.pages.map((t, i) => `[p.${i + 1}]\n${t.trim()}`).join("\n\n")).join("\n\n");
 }
