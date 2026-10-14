@@ -150,9 +150,17 @@ let CURRENT = null;
 const lineHtml = l => `<p class="line">${esc(l.text)} ` +
   (l.hit ? `<a href="#" class="ref" data-open="${DOCS.indexOf(l.hit.doc)}" data-page="${l.hit.page}">(${esc(l.ref)})</a>` : `<span class="ref">(${esc(l.ref)})</span>`) + `</p>`;
 
-function showAnalysis(key, start) {
+async function showAnalysis(key, start) {
   const versions = productVersions(key);
   if (!versions.includes(start)) start = versions[0];
+  $("analysisPanel").hidden = false;
+  $("analysisBody").innerHTML = `<p class="note">문서 본문을 불러오는 중…</p>`;
+  try {
+    await ensurePages(DOCS.filter(d => productKeyOf(d) === key && d.start === start));
+  } catch (e) {
+    $("analysisBody").innerHTML = `<p class="warn">본문을 불러오지 못했습니다: ${esc(e.message)}</p>`;
+    return;
+  }
   const R = analyzeProduct(key, start);
   CURRENT = R;
   $("analysisPanel").hidden = false;

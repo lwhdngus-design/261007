@@ -124,7 +124,7 @@ async function readPages(doc, getBytes) {
 }
 
 function finishLoading(label) {
-  DOCS.forEach(d => { d.searchText = norm(d.path + " " + d.pages.join(" ")); });
+  if (!SERVER_MODE) DOCS.forEach(d => { d.searchText = norm(d.path + " " + d.pages.join(" ")); });
   inferEndDates();
   $("docsBar").style.width = "100%";
   setTimeout(() => { $("docsProgress").hidden = true; }, 600);
@@ -165,45 +165,89 @@ async function loadFolder(fileList) {
   finishLoading(`연결됨: ${root}`);
 }
 
-// 방법 2) 자동 연결 — start.bat(serve.py)로 연 경우, 지정 폴더를 바로 읽고 읽은 글자는 캐시에 저장
+// 방법 2) 자동 연결 — start.bat(serve.py)로 연 경우. 지정 폴더 목록을 받아 오고,
+// 색인이 안 된 PDF만 브라우저가 읽어서 내 PC의 검색 색인(.docs-cache/index.db)에 저장
 const SERVER_MODE = location.protocol.startsWith("http");
 
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? { cache: "no-store" }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+  return data;
+}
+
+// 서버 모드에서는 본문을 필요할 때만 가져옴 (상품 분석·AI 프롬프트용)
+async function ensurePages(docs) {
+  if (!SERVER_MODE) return;
+  for (const d of docs) {
+    if (d.pagesLoaded || !d.id) continue;
+    d.pages = (await api(`api/pages?id=${d.id}`)).pages;
+    d.pagesLoaded = true;
+    d._lines = null;
+  }
+}
+
+let indexing = false;
+
 async function loadFromServer() {
-  const res = await fetch("api/docs", { cache: "no-store" });
-  if (!res.ok) throw new Error("폴더 목록을 가져오지 못했습니다 (HTTP " + res.status + ")");
-  const { root, folder, files } = await res.json();
+  if (indexing) return;
+  const { root, folder, files } = await api("api/docs");
   resetDocs();
   $("docsFolder").textContent = folder;
-  const todo = files.filter(f => !f.pages);
-  let done = 0;
   for (const f of files) {
     const url = "docs/" + f.path.split("/").map(encodeURIComponent).join("/");
-    const doc = makeDoc(f.path, { url });
-    if (f.pages) {
-      doc.pages = f.pages; doc.error = f.error || "";
-    } else {
-      progress(done++, todo.length, f.path);
-      await readPages(doc, async () => new Uint8Array(await (await fetch(url)).arrayBuffer()));
-      // 다음 실행부터 다시 읽지 않도록 캐시 저장 (내 PC의 앱 폴더 .docs-cache)
-      fetch("api/cache", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: f.path, size: f.size, mtime: f.mtime, pages: doc.pages, error: doc.error }) })
-        .catch(() => {});
-    }
-    DOCS.push(doc);
+    DOCS.push(makeDoc(f.path, { url, id: f.id, size: f.size, mtime: f.mtime, indexed: f.indexed,
+                                error: f.error || "", features: f.features || {} }));
   }
-  finishLoading(`자동 연결: ${root}` + (todo.length ? ` (새로 읽음 ${todo.length}개)` : ""));
+  const todo = DOCS.filter(d => !d.indexed);
+  finishLoading(`자동 연결: ${root}`);
+  if (!todo.length) return;
+  // 새 파일·수정된 파일만 읽어서 색인 (중간에 창을 닫아도 다음에 이어서 진행)
+  indexing = true;
+  $("reloadDocsBtn").disabled = true;
+  const t0 = Date.now();
+  try {
+    for (let i = 0; i < todo.length; i++) {
+      const d = todo[i];
+      progress(i, todo.length, d.path);
+      if (i > 2) {
+        const left = Math.round((Date.now() - t0) / i * (todo.length - i) / 60000);
+        $("docsStatus").textContent += ` · 남은 시간 약 ${left}분`;
+      }
+      await readPages(d, async () => new Uint8Array(await (await fetch(d.url)).arrayBuffer()));
+      const r = await api("api/index", { path: d.path, size: d.size, mtime: d.mtime, pages: d.pages, error: d.error });
+      Object.assign(d, { id: r.id, features: r.features, indexed: true, pages: [], pagesLoaded: false });
+      if (i % 25 === 24) renderAll(); // 색인된 문서부터 바로 검색 가능
+    }
+  } finally {
+    indexing = false;
+    $("reloadDocsBtn").disabled = false;
+  }
+  finishLoading(`자동 연결: ${root} (새로 색인 ${todo.length}개)`);
 }
 
 if (SERVER_MODE) {
   $("serverMode").hidden = false;
-  $("docsNote").textContent = "start.bat으로 실행 중 — 지정 폴더를 자동으로 읽습니다. 읽은 글자는 내 PC의 앱 폴더(.docs-cache)에 저장돼 " +
-    "다음 실행부터 바뀐 파일만 다시 읽습니다. 외부로는 아무것도 전송되지 않습니다.";
-  $("reloadDocsBtn").addEventListener("click", () =>
-    loadFromServer().catch(err => { $("docsStatus").textContent = "자동 연결 실패: " + err.message; }));
-  loadFromServer().catch(err => { $("docsStatus").textContent = "자동 연결 실패: " + err.message; });
+  $("docsNote").textContent = "start.bat으로 실행 중 — 지정 폴더를 자동으로 읽어 내 PC의 검색 색인(앱 폴더 .docs-cache)에 저장합니다. " +
+    "다음 실행부터는 새로 추가·수정된 파일만 읽습니다. 외부로는 아무것도 전송되지 않습니다.";
+  const run = () => loadFromServer().catch(err => { indexing = false; $("docsStatus").textContent = "자동 연결 실패: " + err.message; });
+  $("reloadDocsBtn").addEventListener("click", run);
+  run();
 }
 
 // ---------- 검색 ----------
+// 판매기간·분류·판매상태 조건 (키워드 검색과 질문 검색이 함께 사용)
+function docMatchesFilters(d, { from, to, category, status }) {
+  // 판매기간 겹침: 판매개시일 <= To AND (종료일 빈값 OR 종료일 >= From). 판매일자를 모르면 기간 검색에서 제외
+  if ((from || to) && !(d.start && (!to || d.start <= to) && (!from || !d.end || d.end >= from))) return false;
+  if (category && !d.path.includes(category)) return false;
+  if (status && !(d.start && (status === "판매중"
+    ? d.start <= TODAY && (!d.end || d.end >= TODAY)
+    : d.end && d.end < TODAY))) return false;
+  return true;
+}
+
 // 공백 제거 문자열에서 찾은 위치를 원문 위치로 되돌려 앞뒤 문맥을 잘라냄
 function snippets(pageText, terms, max) {
   const map = [];
@@ -222,49 +266,75 @@ function snippets(pageText, terms, max) {
   return out;
 }
 
-// 판매기간·분류·판매상태 조건 (키워드 검색과 질문 검색이 함께 사용)
-function docMatchesFilters(d, { from, to, category, status }) {
-  // 판매기간 겹침: 판매개시일 <= To AND (종료일 빈값 OR 종료일 >= From). 판매일자를 모르면 기간 검색에서 제외
-  if ((from || to) && !(d.start && (!to || d.start <= to) && (!from || !d.end || d.end >= from))) return false;
-  if (category && !d.path.includes(category)) return false;
-  if (status && !(d.start && (status === "판매중"
-    ? d.start <= TODAY && (!d.end || d.end >= TODAY)
-    : d.end && d.end < TODAY))) return false;
-  return true;
-}
+const sortDocs = (rows) => rows
+  // 정렬: 파일명(상품명) 일치 우선 → 판매개시일 최신순
+  .sort((a, b) => (b.nameHit - a.nameHit) || (b.doc.start || "").localeCompare(a.doc.start || ""));
 
-function searchDocs(q) {
+async function searchDocs(q) {
   const terms = q.keyword.trim().split(/\s+/).map(norm).filter(Boolean);
-  return DOCS
-    .filter(d => terms.every(t => d.searchText.includes(t)))
-    .filter(d => docMatchesFilters(d, q))
-    .map(d => ({ doc: d, terms, nameHit: terms.length > 0 && terms.every(t => norm(d.name).includes(t)) }))
-    // 정렬: 파일명(상품명) 일치 우선 → 판매개시일 최신순
-    .sort((a, b) => (b.nameHit - a.nameHit) || (b.doc.start || "").localeCompare(a.doc.start || ""));
+  let docs = DOCS.filter(d => docMatchesFilters(d, q));
+  if (terms.length) {
+    if (SERVER_MODE) {
+      const ids = new Set((await api("api/search", { terms })).ids);
+      docs = docs.filter(d => ids.has(d.id));
+    } else {
+      docs = docs.filter(d => terms.every(t => d.searchText.includes(t)));
+    }
+  }
+  return sortDocs(docs.map(d => ({ doc: d, terms, nameHit: terms.length > 0 && terms.every(t => norm(d.name).includes(t)) })));
 }
 
-const MAX_ROWS = 200;
-
-function renderDocs() {
-  const cur = currentQuery();
-  // 질문(특징) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
-  if (!DOCS.length || cur.mode === "question") { $("docsPanel").hidden = true; return; }
-  $("docsPanel").hidden = false;
-  const rows = searchDocs(cur.form);
-  $("docsSummary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 불러온 PDF ${DOCS.length}건` +
-    (rows.length > MAX_ROWS ? ` (상위 ${MAX_ROWS}건만 표시)` : "");
-  if (!rows.length) {
-    $("docsResults").innerHTML = `<tr><td colspan="5" class="empty">조건에 맞는 문서가 없습니다.</td></tr>`;
-    return;
-  }
-  $("docsResults").innerHTML = rows.slice(0, MAX_ROWS).map(({ doc: d, terms }, i) => {
-    let snipHtml = "", firstPage = 1;
-    if (terms.length) {
+// 일치 문장: 파일 모드는 메모리 본문에서, 서버 모드는 색인에서 (화면에 보이는 문서만)
+async function snippetsFor(docs, terms) {
+  const out = new Map();
+  if (!terms.length) return out;
+  if (SERVER_MODE) {
+    const ids = docs.filter(d => d.id).map(d => d.id);
+    const res = ids.length ? (await api("api/snippets", { ids, terms })).snippets : {};
+    docs.forEach(d => out.set(d, res[d.id] || []));
+  } else {
+    docs.forEach(d => {
       const list = [];
       d.pages.forEach((text, pi) => {
         if (list.length >= 3) return;
         snippets(text, terms, 3 - list.length).forEach(s => list.push({ ...s, page: pi + 1 }));
       });
+      out.set(d, list);
+    });
+  }
+  return out;
+}
+
+const MAX_ROWS = 200;
+let docsRenderSeq = 0;
+
+async function renderDocs() {
+  const seq = ++docsRenderSeq; // 빠르게 다시 검색하면 이전 결과는 버림
+  const cur = currentQuery();
+  // 질문(특징) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
+  if (!DOCS.length || cur.mode === "question") { $("docsPanel").hidden = true; return; }
+  $("docsPanel").hidden = false;
+  let rows, snips;
+  try {
+    rows = await searchDocs(cur.form);
+    snips = await snippetsFor(rows.slice(0, MAX_ROWS).map(r => r.doc), rows.length ? rows[0].terms : []);
+  } catch (e) {
+    if (seq === docsRenderSeq) $("docsSummary").textContent = "검색 실패: " + e.message;
+    return;
+  }
+  if (seq !== docsRenderSeq) return;
+  const notIndexed = DOCS.filter(d => SERVER_MODE && !d.indexed).length;
+  $("docsSummary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 불러온 PDF ${DOCS.length}건` +
+    (rows.length > MAX_ROWS ? ` (상위 ${MAX_ROWS}건만 표시)` : "") +
+    (notIndexed && cur.form.keyword.trim() ? ` · 색인 중인 ${notIndexed}건은 아직 검색되지 않음` : "");
+  if (!rows.length) {
+    $("docsResults").innerHTML = `<tr><td colspan="5" class="empty">조건에 맞는 문서가 없습니다.</td></tr>`;
+    return;
+  }
+  $("docsResults").innerHTML = rows.slice(0, MAX_ROWS).map(({ doc: d, terms }) => {
+    let snipHtml = "", firstPage = 1;
+    if (terms.length) {
+      const list = snips.get(d) || [];
       if (list.length) firstPage = list[0].page;
       snipHtml = list.map(s => `<p class="snip"><span class="pg">p.${s.page}</span>${s.lead ? "…" : ""}${esc(s.before)}<mark>${esc(s.hit)}</mark>${esc(s.after)}${s.tail ? "…" : ""}</p>`).join("")
         || `<p class="snip note">파일 경로에서 일치</p>`;

@@ -131,6 +131,21 @@ function regexSnippet(pageText, re) {
   return { before: pageText.slice(a, s), hit: pageText.slice(s, e), after: pageText.slice(e, b), lead: a > 0, tail: b < pageText.length };
 }
 
+// 문서가 특징을 가졌는지: 서버 모드는 색인 때 미리 계산한 태그, 파일 모드는 본문에서 바로 확인
+const docHasFeature = (d, f) => (SERVER_MODE ? !!(d.features && d.features[f.id]) : featureMatches(f, d.searchText));
+
+// 특징 근거 문맥 (패턴별 첫 페이지)
+function featureEvidence(d, f) {
+  if (SERVER_MODE) return (d.features && d.features[f.id]) || [];
+  return f.patterns.map(re => {
+    for (let i = 0; i < d.pages.length; i++) {
+      const s = regexSnippet(d.pages[i], re);
+      if (s) return { page: i + 1, ...s };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
 const DOC_PRIORITY = ["사업방법서", "상품요약서", "약관", "산출방법서", "기타"];
 const byDocPriority = (a, b) => DOC_PRIORITY.indexOf(a.docType) - DOC_PRIORITY.indexOf(b.docType) || (b.start || "").localeCompare(a.start || "");
 
@@ -143,7 +158,7 @@ function answerProducts(cur) {
   });
   const out = [];
   for (const [key, docs] of groups) {
-    const perFeature = cur.Q.features.map(f => ({ f, docs: docs.filter(d => featureMatches(f, d.searchText)).sort(byDocPriority) }));
+    const perFeature = cur.Q.features.map(f => ({ f, docs: docs.filter(d => docHasFeature(d, f)).sort(byDocPriority) }));
     if (perFeature.some(x => !x.docs.length)) continue; // 모든 특징을 만족해야 함
     const matchedDocs = [...new Set(perFeature.flatMap(x => x.docs))].sort(byDocPriority);
     const latest = matchedDocs.map(d => d.start).filter(Boolean).sort().pop() || "";
@@ -174,15 +189,11 @@ function renderAnswer() {
     const evidence = p.perFeature.map(({ f, docs }) => {
       const d = docs[0];
       const shown = [];
-      const lines = f.patterns.map(re => {
-        for (let i = 0; i < d.pages.length; i++) {
-          const s = regexSnippet(d.pages[i], re);
-          if (s && shown.some(t => t.page === i + 1 && t.text.includes(s.hit))) return ""; // 앞 문맥에 이미 보임
-          if (s) shown.push({ page: i + 1, text: s.before + s.hit + s.after });
-          if (s) return `<p class="snip"><a href="#" class="pg" data-open="${DOCS.indexOf(d)}" data-page="${i + 1}">${esc(d.docType)} p.${i + 1}</a>` +
-            `${s.lead ? "…" : ""}${esc(s.before)}<mark>${esc(s.hit)}</mark>${esc(s.after)}${s.tail ? "…" : ""}</p>`;
-        }
-        return "";
+      const lines = featureEvidence(d, f).map(s => {
+        if (shown.some(t => t.page === s.page && t.text.includes(s.hit))) return ""; // 앞 문맥에 이미 보임
+        shown.push({ page: s.page, text: s.before + s.hit + s.after });
+        return `<p class="snip"><a href="#" class="pg" data-open="${DOCS.indexOf(d)}" data-page="${s.page}">${esc(d.docType)} p.${s.page}</a>` +
+          `${s.lead ? "…" : ""}${esc(s.before)}<mark>${esc(s.hit)}</mark>${esc(s.after)}${s.tail ? "…" : ""}</p>`;
       }).join("");
       return `<div><span class="tag">${esc(f.name)}</span>${lines}</div>`;
     }).join("");

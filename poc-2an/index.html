@@ -196,7 +196,12 @@
 
 <script src="data.js"></script>
 <script src="lib/pdf.min.js"></script>
-<script src="lib/pdf.worker.min.js"></script>
+<script>
+  // 더블클릭(file://)으로 열면 별도 작업 스레드를 못 쓰므로 같은 화면에서 PDF를 읽고,
+  // start.bat(http://127.0.0.1)으로 열면 작업 스레드에서 읽어 화면이 멈추지 않게 함
+  if (location.protocol === "file:") document.write('<script src="lib/pdf.worker.min.js"><\/script>');
+  else pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+</script>
 <script src="lib/cmaps-ko.js"></script>
 <script>
 // ---------- CSV 파싱 (따옴표 안의 쉼표·줄바꿈 처리) ----------

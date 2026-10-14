@@ -1,17 +1,22 @@
-# 로컬 실행기 — 내 PC의 기초서류 폴더를 앱에 자동 연결 (파이썬 기본 기능만 사용, 추가 설치 없음)
+# 로컬 실행기 — 내 PC의 기초서류 폴더를 앱에 자동 연결하고, 검색 색인(SQLite)으로 대량 문서를 빠르게 검색
+# 파이썬 기본 기능만 사용 (추가 설치 없음)
 #
 #   python serve.py                         → docs-folder.txt 의 폴더 사용 (없으면 처음에 한 번 물어봄)
 #   python serve.py --folder "C:\...\2026"  → 폴더 변경(저장됨)
 #
 # - 이 PC(127.0.0.1)에서만 접속됩니다. 외부로 아무것도 보내지 않습니다.
-# - PDF에서 읽은 글자는 .docs-cache 폴더에 저장해, 다음 실행부터는 바뀐 파일만 다시 읽습니다.
-#   (.docs-cache 폴더를 지우면 캐시가 초기화됩니다. GitHub에는 올라가지 않습니다)
+# - PDF 글자 추출은 브라우저(pdf.js)가 하고, 결과를 .docs-cache/index.db 에 저장합니다.
+#   다음 실행부터는 새로 추가·수정된 파일만 다시 읽습니다. (.docs-cache 폴더를 지우면 초기화)
+# - 특징 사전(dummy-data/features.csv)이 바뀌면 저장된 글자로 특징 태그를 자동으로 다시 계산합니다.
 import argparse
+import csv
 import hashlib
 import http.server
 import json
 import os
+import re
 import socketserver
+import sqlite3
 import sys
 import threading
 import urllib.parse
@@ -21,9 +26,17 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parent
 CONFIG = APP_DIR / "docs-folder.txt"
 CACHE_DIR = APP_DIR / ".docs-cache"
-MAX_POST = 200 * 1024 * 1024  # 캐시 1건 최대 200MB
+DB_PATH = CACHE_DIR / "index.db"
+FEATURES_CSV = APP_DIR / "dummy-data" / "features.csv"
+MAX_POST = 300 * 1024 * 1024
+WRITE_LOCK = threading.Lock()
 
 
+def norm(s):
+    return re.sub(r"\s+", "", s or "").lower()
+
+
+# ---------- 폴더 설정 ----------
 def ask_folder():
     while True:
         raw = input("기초서류 PDF 폴더 경로를 붙여넣고 Enter (예: C:\\Users\\user\\Desktop\\App_261014\\doc_sample_2026\\2026)\n> ")
@@ -46,33 +59,252 @@ def docs_root(cli_folder):
     return p.resolve()
 
 
-def cache_file(rel):
-    return CACHE_DIR / (hashlib.sha1(rel.encode("utf-8")).hexdigest() + ".json")
+# ---------- 색인 DB ----------
+def connect():
+    CACHE_DIR.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.create_function("norm", 1, norm, deterministic=True)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 
+def init_db():
+    with connect() as c:
+        c.executescript("""
+          CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY, path TEXT UNIQUE, size INT, mtime INT,
+                                          error TEXT, n_pages INT);
+          CREATE TABLE IF NOT EXISTS pages(id INTEGER PRIMARY KEY, doc_id INT, page_no INT, text TEXT);
+          CREATE INDEX IF NOT EXISTS pages_doc ON pages(doc_id, page_no);
+          CREATE TABLE IF NOT EXISTS tags(doc_id INT, feature_id TEXT, evidence TEXT, PRIMARY KEY(doc_id, feature_id));
+          CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+        """)
+        # 공백을 뺀 본문을 3글자 단위로 색인 (부분 일치 검색용, 본문은 pages 테이블에만 저장)
+        c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(compact, tokenize='trigram', detail='none', content='')")
+
+
+def delete_doc(c, doc_id):
+    for pid, text in c.execute("SELECT id, text FROM pages WHERE doc_id=?", (doc_id,)).fetchall():
+        c.execute("INSERT INTO pages_fts(pages_fts, rowid, compact) VALUES('delete', ?, ?)", (pid, norm(text)))
+    c.execute("DELETE FROM pages WHERE doc_id=?", (doc_id,))
+    c.execute("DELETE FROM tags WHERE doc_id=?", (doc_id,))
+    c.execute("DELETE FROM docs WHERE id=?", (doc_id,))
+
+
+# ---------- 특징 태그 (질문 검색용, 색인 시 미리 계산) ----------
+def load_features():
+    if not FEATURES_CSV.exists():
+        return [], ""
+    raw = FEATURES_CSV.read_bytes()
+    feats = []
+    for r in csv.DictReader(raw.decode("utf-8-sig").splitlines()):
+        pats = []
+        for p in filter(None, (r.get("doc_patterns") or "").split(";")):
+            try:
+                pats.append(re.compile(p, re.I))
+            except re.error as e:
+                print(f"[경고] 특징 {r.get('feature_id')} 패턴 오류 '{p}': {e}")
+        if pats:
+            feats.append((r["feature_id"], pats))
+    return feats, hashlib.sha1(raw).hexdigest()
+
+
+def compact_map(text):
+    idx, chars = [], []
+    for i, ch in enumerate(text):
+        if not ch.isspace():
+            chars.append(ch.lower())
+            idx.append(i)
+    return "".join(chars), idx
+
+
+def cut(text, idx, s_c, e_c, before=50, after=70):
+    s, e = idx[s_c], idx[e_c - 1] + 1
+    a, b = max(0, s - before), min(len(text), e + after)
+    return {"before": text[a:s], "hit": text[s:e], "after": text[e:b], "lead": a > 0, "tail": b < len(text)}
+
+
+def doc_tags(path, pages, feats):
+    """문서에 모든 패턴이 있으면 그 특징으로 태그. 근거 = 패턴별 첫 페이지 문맥"""
+    maps = [compact_map(t) for t in pages]
+    whole = norm(path) + "".join(m[0] for m in maps)
+    out = {}
+    for fid, pats in feats:
+        if not all(p.search(whole) for p in pats):
+            continue
+        ev = []
+        for p in pats:
+            for pi, (comp, idx) in enumerate(maps):
+                m = p.search(comp)
+                if m and m.end() > m.start():
+                    ev.append({"page": pi + 1, **cut(pages[pi], idx, m.start(), m.end())})
+                    break
+        out[fid] = ev
+    return out
+
+
+def write_tags(c, doc_id, tags):
+    c.execute("DELETE FROM tags WHERE doc_id=?", (doc_id,))
+    c.executemany("INSERT INTO tags VALUES(?,?,?)",
+                  [(doc_id, fid, json.dumps(ev, ensure_ascii=False)) for fid, ev in tags.items()])
+
+
+def ensure_tags():
+    feats, h = load_features()
+    with WRITE_LOCK, connect() as c:
+        row = c.execute("SELECT value FROM meta WHERE key='features_hash'").fetchone()
+        if row and row[0] == h:
+            return
+        docs = c.execute("SELECT id, path FROM docs").fetchall()
+        if docs:
+            print(f"특징 사전이 바뀌어 특징 태그를 다시 계산합니다 ({len(docs)}개 문서)...")
+        for doc_id, path in docs:
+            pages = [t for (t,) in c.execute("SELECT text FROM pages WHERE doc_id=? ORDER BY page_no", (doc_id,))]
+            write_tags(c, doc_id, doc_tags(path, pages, feats))
+        c.execute("INSERT OR REPLACE INTO meta VALUES('features_hash', ?)", (h,))
+
+
+def index_doc(item):
+    """브라우저가 보낸 추출 결과 저장: {path, size, mtime, pages, error}"""
+    feats, _ = load_features()
+    pages = [p or "" for p in item.get("pages") or []]
+    with WRITE_LOCK, connect() as c:
+        old = c.execute("SELECT id FROM docs WHERE path=?", (item["path"],)).fetchone()
+        if old:
+            delete_doc(c, old[0])
+        cur = c.execute("INSERT INTO docs(path, size, mtime, error, n_pages) VALUES(?,?,?,?,?)",
+                        (item["path"], item["size"], item["mtime"], item.get("error") or "", len(pages)))
+        doc_id = cur.lastrowid
+        for i, t in enumerate(pages):
+            pid = c.execute("INSERT INTO pages(doc_id, page_no, text) VALUES(?,?,?)", (doc_id, i + 1, t)).lastrowid
+            c.execute("INSERT INTO pages_fts(rowid, compact) VALUES(?,?)", (pid, norm(t)))
+        tags = doc_tags(item["path"], pages, feats)
+        write_tags(c, doc_id, tags)
+    return {"id": doc_id, "features": tags, "error": item.get("error") or "", "n_pages": len(pages)}
+
+
+def import_json_cache():
+    """이전 버전(.docs-cache/*.json) 캐시를 DB로 옮김 → 다시 읽지 않아도 됨"""
+    files = list(CACHE_DIR.glob("*.json")) if CACHE_DIR.exists() else []
+    for f in files:
+        try:
+            c = json.loads(f.read_text(encoding="utf-8"))
+            if c.get("path"):
+                index_doc(c)
+            f.unlink()
+        except (OSError, ValueError, KeyError):
+            pass
+    if files:
+        print(f"이전 캐시 {len(files)}개를 색인으로 옮겼습니다.")
+
+
+# ---------- 목록 ----------
 def list_docs(root):
-    files = []
+    on_disk = {}
     for dirpath, _, names in os.walk(root):
         for n in sorted(names):
-            if not n.lower().endswith(".pdf"):
-                continue
-            full = Path(dirpath) / n
-            st = full.stat()
-            rel = root.name + "/" + full.relative_to(root).as_posix()  # 폴더 선택 방식과 같은 경로 형태
-            item = {"path": rel, "size": st.st_size, "mtime": int(st.st_mtime)}
-            cf = cache_file(rel)
-            if cf.exists():
-                try:
-                    c = json.loads(cf.read_text(encoding="utf-8"))
-                    if c.get("size") == item["size"] and c.get("mtime") == item["mtime"]:
-                        item["pages"] = c.get("pages", [])
-                        item["error"] = c.get("error", "")
-                except (OSError, ValueError):
-                    pass
-            files.append(item)
+            if n.lower().endswith(".pdf"):
+                full = Path(dirpath) / n
+                st = full.stat()
+                rel = root.name + "/" + full.relative_to(root).as_posix()  # 폴더 선택 방식과 같은 경로 형태
+                on_disk[rel] = (st.st_size, int(st.st_mtime))
+    with connect() as c:
+        rows = {p: (i, s, m, e, n) for i, p, s, m, e, n in c.execute("SELECT id, path, size, mtime, error, n_pages FROM docs")}
+        tags = {}
+        for doc_id, fid, ev in c.execute("SELECT doc_id, feature_id, evidence FROM tags"):
+            tags.setdefault(doc_id, {})[fid] = json.loads(ev)
+    gone = [r[0] for p, r in rows.items() if p not in on_disk]
+    if gone:
+        with WRITE_LOCK, connect() as c:
+            for doc_id in gone:
+                delete_doc(c, doc_id)
+    files = []
+    for rel, (size, mtime) in on_disk.items():
+        item = {"path": rel, "size": size, "mtime": mtime, "indexed": False}
+        r = rows.get(rel)
+        if r and r[1] == size and r[2] == mtime:
+            item.update(id=r[0], indexed=True, error=r[3] or "", n_pages=r[4], features=tags.get(r[0], {}))
+        files.append(item)
     return {"root": root.name, "folder": str(root), "files": files}
 
 
+# ---------- 검색 ----------
+# 공백 제거·소문자 본문을 SQLite 내장 함수로 계산 (파이썬 함수보다 훨씬 빠름)
+# 일반 공백·줄바꿈·탭·CR, 줄바꿈 없는 공백(U+00A0), 전각 공백(U+3000)
+SQL_NORM = "lower(" + "replace(" * 6 + "text" + "".join(
+    f", {ch}, '')" for ch in ("' '", "char(10)", "char(13)", "char(9)", "char(160)", "char(12288)")) + ")"
+
+
+def trigram_query(term):
+    return " AND ".join('"' + term[i:i + 3].replace('"', '""') + '"' for i in range(len(term) - 2))
+
+
+def search_ids(terms, limit_ids=None):
+    """모든 단어가 들어 있는 문서 id (문서 단위 AND, 공백 무시, 파일 경로 포함)"""
+    terms = sorted({norm(t) for t in terms if norm(t)}, key=len, reverse=True)  # 긴 단어부터 → 후보 축소
+    pnorm = SQL_NORM
+    with connect() as c:
+        paths = {i: norm(p) for i, p in c.execute("SELECT id, path FROM docs")}
+        ids = set(paths) if limit_ids is None else set(limit_ids) & set(paths)
+        for t in terms:
+            hit = {i for i in ids if t in paths[i]}
+            rest = ids - hit
+            if len(t) >= 3:
+                # 1) 3글자 색인으로 후보 페이지(본문 없이 id만)  2) 문서마다 실제 포함 페이지를 1개만 확인하고 멈춤
+                cand = {}
+                for doc_id, pid in c.execute("SELECT p.doc_id, p.id FROM pages_fts f JOIN pages p ON p.id=f.rowid "
+                                             "WHERE pages_fts MATCH ? ORDER BY p.doc_id, p.id", (trigram_query(t),)):
+                    if doc_id in rest:
+                        cand.setdefault(doc_id, []).append(pid)
+                for doc_id, pids in cand.items():
+                    for k in range(0, len(pids), 500):
+                        chunk = pids[k:k + 500]
+                        if c.execute(f"SELECT 1 FROM pages WHERE id IN ({','.join('?' * len(chunk))}) "
+                                     f"AND instr({pnorm}, ?) > 0 LIMIT 1", chunk + [t]).fetchone():
+                            hit.add(doc_id)
+                            break
+            else:
+                # 1~2글자 단어는 색인을 못 써서 문서마다 페이지를 훑되, 찾으면 바로 멈춤
+                for doc_id in rest:
+                    if c.execute(f"SELECT 1 FROM pages WHERE doc_id=? AND instr({pnorm}, ?) > 0 LIMIT 1",
+                                 (doc_id, t)).fetchone():
+                        hit.add(doc_id)
+            ids = hit
+            if not ids:
+                break
+    return sorted(ids)
+
+
+def snippets_for(ids, terms, per_doc=3):
+    terms = [norm(t) for t in terms if norm(t)]
+    out = {}
+    with connect() as c:
+        for doc_id in ids:
+            snips = []
+            for t in terms:
+                if len(snips) >= per_doc:
+                    break
+                if len(t) >= 3:
+                    rows = c.execute("SELECT p.page_no, p.text FROM pages_fts f JOIN pages p ON p.id=f.rowid "
+                                     "WHERE pages_fts MATCH ? AND p.doc_id=? ORDER BY p.page_no", (trigram_query(t), doc_id))
+                else:
+                    rows = c.execute(f"SELECT page_no, text FROM pages WHERE doc_id=? AND instr({SQL_NORM}, ?) > 0 "
+                                     "ORDER BY page_no", (doc_id, t))
+                for page_no, text in rows:
+                    comp, idx = compact_map(text)
+                    k = comp.find(t)
+                    if k != -1:
+                        snips.append({"page": page_no, **cut(text, idx, k, k + len(t), 40, 40)})
+                        break
+            out[doc_id] = snips
+    return out
+
+
+def doc_pages(doc_id):
+    with connect() as c:
+        return [t for (t,) in c.execute("SELECT text FROM pages WHERE doc_id=? ORDER BY page_no", (doc_id,))]
+
+
+# ---------- 웹 서버 ----------
 def make_handler(root):
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
@@ -90,6 +322,12 @@ def make_handler(root):
             self.end_headers()
             self.wfile.write(body)
 
+        def read_json(self):
+            n = int(self.headers.get("Content-Length", 0))
+            if n <= 0 or n > MAX_POST:
+                raise ValueError("요청 크기 오류")
+            return json.loads(self.rfile.read(n).decode("utf-8"))
+
         def doc_path(self, rel):
             # "<루트폴더명>/하위/파일.pdf" → 실제 경로 (루트 밖으로 나가는 경로는 거부)
             parts = rel.split("/", 1)
@@ -100,8 +338,12 @@ def make_handler(root):
 
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(url.query)
             if url.path == "/api/docs":
+                ensure_tags()
                 return self.send_json(list_docs(root))
+            if url.path == "/api/pages":
+                return self.send_json({"pages": doc_pages(int(qs.get("id", ["0"])[0]))})
             if url.path.startswith("/docs/"):
                 p = self.doc_path(urllib.parse.unquote(url.path[len("/docs/"):]))
                 if not p:
@@ -118,23 +360,21 @@ def make_handler(root):
             return super().do_GET()
 
         def do_POST(self):
-            if urllib.parse.urlparse(self.path).path != "/api/cache":
-                return self.send_error(404)
-            n = int(self.headers.get("Content-Length", 0))
-            if n <= 0 or n > MAX_POST:
-                return self.send_error(413)
+            path = urllib.parse.urlparse(self.path).path
             try:
-                c = json.loads(self.rfile.read(n).decode("utf-8"))
-                if not self.doc_path(c["path"]):
-                    return self.send_error(400)
-                CACHE_DIR.mkdir(exist_ok=True)
-                tmp = cache_file(c["path"]).with_suffix(".tmp")
-                tmp.write_text(json.dumps({k: c.get(k) for k in ("path", "size", "mtime", "pages", "error")},
-                                          ensure_ascii=False), encoding="utf-8")
-                tmp.replace(cache_file(c["path"]))
-            except (ValueError, KeyError, OSError) as e:
-                return self.send_json({"ok": False, "error": str(e)}, 400)
-            return self.send_json({"ok": True})
+                body = self.read_json()
+                if path == "/api/index":
+                    if not self.doc_path(body["path"]):
+                        return self.send_json({"error": "폴더 밖 경로"}, 400)
+                    return self.send_json(index_doc(body))
+                if path == "/api/search":
+                    return self.send_json({"ids": search_ids(body.get("terms", []))})
+                if path == "/api/snippets":
+                    res = snippets_for([int(i) for i in body.get("ids", [])][:300], body.get("terms", []))
+                    return self.send_json({"snippets": {str(k): v for k, v in res.items()}})
+            except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_error(404)
 
     return Handler
 
@@ -151,6 +391,9 @@ def main():
     args = ap.parse_args()
 
     root = docs_root(args.folder)
+    init_db()
+    import_json_cache()
+    ensure_tags()
     server = None
     for port in range(args.port, args.port + 20):
         try:
