@@ -318,12 +318,16 @@ def make_handler(root):
         def log_message(self, *a):  # 콘솔을 조용하게
             pass
 
+        def end_headers(self):
+            # 업데이트(git pull) 후 브라우저가 예전 화면을 캐시에서 꺼내 쓰지 않도록 매번 새로 받게 함
+            self.send_header("Cache-Control", "no-cache")
+            super().end_headers()
+
         def send_json(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
