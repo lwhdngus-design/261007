@@ -392,13 +392,37 @@ function analyzeProduct(key, start) {
 
 // ---------- 화면 ----------
 // 지급기준표 그림 (누르면 PDF 해당 쪽) + 글자로 읽은 결과는 펼쳐보기
-function tableImagesHtml(r) {
-  const imgs = r.images.map(im => `<a href="#" class="tblimg" data-open="${DOCS.indexOf(im.doc)}" data-page="${im.page}" title="약관 p.${im.page} 열기">` +
-    `<img src="${im.src}" alt="보험금 지급기준표 (약관 p.${im.page})"></a>`).join("");
+// 지급기준표 그림 모음 (창으로 크게 보기용) — 칸에는 작은 미리보기와 버튼만 둠
+const IMG_SETS = [];
+function registerImgSet(title, images) { IMG_SETS.push({ title, images }); return IMG_SETS.length - 1; }
+
+function tableImagesHtml(r, title = "보험금 지급기준표") {
+  const id = registerImgSet(title, r.images);
+  const pages = r.images.map(i => i.page).join(", p.");
+  const thumb = `<button type="button" class="tblthumb" data-imgset="${id}" title="크게 보기"><img src="${r.images[0].src}" alt="보험금 지급기준표 미리보기"></button>`;
   const text = r.lines.length ? `<details class="tbltext"><summary>글자로 보기 (복사용 · 칸 구분이 정확하지 않을 수 있음)</summary>${r.lines.map(lineHtml).join("")}</details>` : "";
-  return imgs + `<p class="note">약관 p.${r.images.map(i => i.page).join(", p.")} 보험금 지급기준표 — 그림을 누르면 원문이 열립니다</p>` + text +
+  return `<div class="tblwrap">${thumb}<div class="tblmeta"><button type="button" class="mini primary" data-imgset="${id}">지급기준표 보기</button>` +
+    `<span class="note">약관 p.${pages}${r.images.length > 1 ? ` (${r.images.length}쪽)` : ""}</span></div></div>` + text +
     (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "");
 }
+
+// 큰 창: 그림 여러 묶음을 나란히 (상품 비교 시 여러 상품)
+function openImgModal(title, sets) {
+  $("modalTitle").textContent = title;
+  $("modalBody").style.gridTemplateColumns = `repeat(${sets.length}, minmax(${sets.length > 1 ? 420 : 300}px, 1fr))`;
+  $("modalBody").innerHTML = sets.map(s => `<div class="modal-col">${sets.length > 1 ? `<h4>${esc(s.title)}</h4>` : ""}` +
+    (s.images.length ? s.images.map(im => `<img src="${im.src}" alt="보험금 지급기준표 (약관 p.${im.page})">` +
+      `<p class="note">약관 p.${im.page} <a href="#" data-open="${DOCS.indexOf(im.doc)}" data-page="${im.page}">원문 열기</a></p>`).join("")
+      : `<p class="na">지급기준표 그림 없음</p>`) + `</div>`).join("");
+  $("imgModal").hidden = false;
+  $("modalClose").focus();
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-imgset]");
+  if (b) { const s = IMG_SETS[+b.dataset.imgset]; openImgModal(s.title, [s]); return; }
+  if (e.target.id === "imgModal" || e.target.closest("#modalClose")) $("imgModal").hidden = true;
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("imgModal").hidden = true; });
 
 // ---------- 화면 ----------
 let CURRENT = null;
@@ -426,7 +450,7 @@ async function showAnalysis(key, start) {
   $("analysisVersion").innerHTML = versions.map(v => `<option value="${esc(v)}"${v === start ? " selected" : ""}>판매개시일 ${esc(v || "미상")}</option>`).join("");
   const rows = R.rows.map(r => `<tr>
       <td>${esc(r.label)}</td>
-      <td>${r.images && r.images.length ? tableImagesHtml(r) : r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
+      <td>${r.images && r.images.length ? tableImagesHtml(r, `${R.name} (${R.start || "미상"}) 보험금 지급기준표`) : r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
         + (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "")
  : `<span class="na">${esc(emptyText(r))}</span>`}</td>
       <td>${r.lines.length ? esc([...new Set(r.lines.map(l => l.ref))].join(", ")) : "-"}</td>

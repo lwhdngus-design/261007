@@ -119,7 +119,7 @@ function renderCompare() {
     if (onlyDiff && (st.cls === "same" || st.cls === "none")) return "";
     const cells = results.map(R => {
       const row = R.rows.find(r => r.label === label);
-      if (row.images && row.images.length) return `<td>${tableImagesHtml(row)}</td>`;
+      if (row.images && row.images.length) return `<td>${tableImagesHtml(row, `${R.name} (${R.start || "미상"})`)}</td>`;
       return `<td>${row.lines.length ? row.lines.map(lineHtml).join("") + (row.more > 0 ? `<p class="note">외 ${row.more}줄</p>` : "")
         : `<span class="na">${esc(emptyText(row))}</span>`}</td>`;
     }).join("");
@@ -146,6 +146,8 @@ function renderCompare() {
   }
   const checks = results.flatMap(R => R.checks.filter(c => c.startsWith("[확인 필요]") || c.includes("파일이 없어")).map(c => `${R.name} (${R.start}): ${c}`));
   $("compareBody").innerHTML = `
+    ${results.some(R => (R.rows.find(r => r.id === "benefit") || {}).images?.length)
+      ? `<div class="buttons" style="margin-bottom:8px"><button type="button" class="primary" id="sideBySideBtn">지급기준표 나란히 보기</button></div>` : ""}
     <p class="summary">11개 항목 중 <b>${diffCount}</b>개 항목이 다릅니다. (원문 줄 기준 자동 판정 — 근거를 눌러 원문 확인)</p>
     <div class="table-scroll"><table class="facts compare"><thead>${head}</thead><tbody>${body || `<tr><td colspan="${results.length + 2}" class="empty">다른 항목이 없습니다.</td></tr>`}</tbody></table></div>
     ${diffHtml}
@@ -226,3 +228,12 @@ $("closeCompareBtn").addEventListener("click", () => { $("comparePanel").hidden 
 $("copyCompareBtn").addEventListener("click", e => LAST_COMPARE && copyText(compareMarkdown(), e.target));
 $("csvCompareBtn").addEventListener("click", () => LAST_COMPARE &&
   download(`${LAST_COMPARE.revision ? "revision-compare" : "product-compare"}_${TODAY}.csv`, compareCsv())); // 영문 파일명: 일부 환경에서 한글 다운로드 이름이 깨짐
+
+// 비교 중인 상품들의 지급기준표를 한 창에 나란히
+document.addEventListener("click", e => {
+  if (!e.target.closest("#sideBySideBtn") || !LAST_COMPARE) return;
+  openImgModal("보험금 지급기준표 나란히 보기", LAST_COMPARE.results.map(R => ({
+    title: `${R.name} (${R.start || "미상"})`,
+    images: (R.rows.find(r => r.id === "benefit") || {}).images || [],
+  })));
+});
