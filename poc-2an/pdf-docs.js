@@ -117,9 +117,19 @@ async function extractPages(data) {
   return pages;
 }
 
+// 파일명에 상품명이 없으면(코드·번호뿐) 바로 위 폴더명을 상품명으로 씀
+// 예) 공시실 다운로드 도구 구조: 2026/2026.04.01/(무)OO보험/[보험약관] 원본파일명.pdf
+function productNameFromPath(path) {
+  const parts = path.split("/");
+  const fromFile = productNameOf(parts[parts.length - 1]);
+  if (/[가-힣]{2,}/.test(fromFile) || parts.length < 2) return fromFile;
+  const folder = parts[parts.length - 2];
+  return findDates(folder).length || !/[가-힣]{2,}/.test(folder) ? fromFile : productNameOf(folder);
+}
+
 function makeDoc(path, extra) {
   const name = path.split("/").pop();
-  const productName = productNameOf(name);
+  const productName = productNameFromPath(path);
   return { path, name, docType: docTypeOf(name), productName, productKey: productKeyFrom(productName),
            ...saleDatesOf(path), pages: [], error: "", ...extra };
 }

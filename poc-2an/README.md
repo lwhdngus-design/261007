@@ -522,3 +522,9 @@ dummy-data 폴더의 products.csv, coverages.csv, documents.csv, portfolio.csv �
 
 - `update.bat` 더블클릭 → 깃허브에서 최신 버전을 받습니다(`git pull` 명령과 같음).
 - 명령으로 할 때: 앱 폴더 주소창에 `cmd` 입력 → Enter → `git pull`
+
+## 19. 공시실 서류 내려받기 (기초서류 연결 화면 안내)
+
+- 상단 **기초서류 연결** 화면 아래에 하나생명 공시실 "전체상품 목록" 일괄 다운로드 도구 사용법(STEP 1~4)을 넣었습니다.
+- 도구 자체는 별도 저장소(`lwhdngus-design/261014`, 브랜치 `claude/hanalife-product-docs-download-089p7m`, 폴더 `261013/hanalife_docs`)에 있습니다. 앱은 외부로 아무것도 보내지 않으며, 다운로드는 그 도구를 내 PC에서 직접 실행할 때만 일어납니다.
+- 도구가 만드는 `연도/판매일자/상품명/[서류종류] 원본파일명.pdf` 구조를 그대로 읽습니다. 파일명에 상품명이 없으면(코드·번호뿐) **상품명 폴더**를 상품명으로 씁니다.
