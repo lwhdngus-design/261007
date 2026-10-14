@@ -538,3 +538,8 @@ dummy-data 폴더의 products.csv, coverages.csv, documents.csv, portfolio.csv �
 
 - [검증 실행]을 누르면 기획서 요구사항별 완료 기준 13개를 가상 데이터로 실행해 기대값·실제값·통과 여부를 표로 보여 줍니다(`selfcheck.js`).
 - 웹 데모는 샘플을 다 읽으면 자동으로 실행되고, 링크 끝에 `#selfcheck`를 붙이면 결과 화면이 바로 열립니다.
+
+## 22. 실행 결과 바로 보기 (링크로 대표 결과 열기)
+
+- 주소 끝에 `#이름`을 붙이면 가상 샘플을 읽은 뒤 그 실행 결과 화면이 바로 열립니다(`examples.js`). 교육용 실습 STEP 4에도 같은 목록이 있습니다.
+- `#q-split` 질문 검색 답변 · `#kw-premium` 키워드 검색 · `#catalog` 판매시기별 상품 목록 · `#analysis` 상품 분석 · `#paytable` 지급기준표 · `#revision` 개정 전후 비교 · `#compare` 상품 비교 3개 · `#db-detail` 포트폴리오·주요사항 · `#selfcheck` 자동 검증

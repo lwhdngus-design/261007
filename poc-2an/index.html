@@ -65,6 +65,10 @@
   .tries { display: flex; flex-wrap: wrap; gap: 8px; }
   .tries button { padding: 9px 14px; white-space: normal; text-align: left; }
   .ok-text { color: var(--accent); }
+  .example-note { margin: 12px 0 0; padding: 8px 12px; background: var(--accent-weak); border-left: 3px solid var(--accent); font-size: 13px; }
+  .sub-h { font-size: 15px; margin: 18px 0 4px; }
+  .examples { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 6px; }
+  .examples a { color: var(--accent); }
   table.checks tbody tr { cursor: default; }
   table.checks tr.fail td { background: #fff7e6; }
   table.checks td:last-child { text-align: center; white-space: nowrap; }
@@ -328,6 +332,7 @@
     </div>
   </div>
 </header>
+<div class="wrap"><p class="example-note" id="exampleNote" role="status" hidden></p></div>
 
 <div class="wrap app" id="viewHome" data-page="home">
 
@@ -602,6 +607,9 @@ python hanalife_download.py                ← 판매 + 판매중지 전체</pre
           <button type="button" data-try="2023년 판매중인 저해지형 종신보험">③ 조건 섞기: 2023년 판매중 저해지형 종신</button>
           <button type="button" data-try="">④ 상품 목록에서 [분석] → [비교 담기]로 개정 전후 비교</button>
         </div>
+        <h3 class="sub-h">실행 결과 바로 보기</h3>
+        <p class="note">누르면 해당 실행 결과 화면이 바로 열립니다. 주소 끝에 붙는 이름(예: #analysis)으로 링크를 걸 수 있습니다.</p>
+        <ul class="examples" id="exampleList"></ul>
       </div>
     </li>
     <li>
@@ -810,6 +818,7 @@ $("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderA
 <script src="layout.js"></script>
 <script src="product-db.js"></script>
 <script src="selfcheck.js"></script>
+<script src="examples.js"></script>
 <script>renderAll();</script>
 </body>
 </html>
