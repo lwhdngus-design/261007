@@ -195,6 +195,7 @@ async function ensurePages(docs) {
     d.pages = (await api(`api/pages?id=${d.id}`)).pages;
     d.pagesLoaded = true;
     d._lines = null;
+    d._sections = null;
   }
 }
 

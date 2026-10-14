@@ -1,5 +1,5 @@
 // 2단계 — 상품 비교 · 개정 전후 비교
-// 비교함에 상품(판매일자 단위)을 2~4개 담아 11개 항목을 나란히 비교하고,
+// 비교함에 상품(판매일자 단위)을 2~4개 담아 핵심 특징 표의 항목을 나란히 비교하고,
 // 같은 상품의 두 판매일자를 비교하면 문서별로 바뀐 줄(추가·삭제·변경)을 보여줍니다. 모두 원문 줄 그대로.
 
 const MAX_COMPARE = 4;
@@ -94,6 +94,7 @@ async function showCompare() {
     const cdocs = DOCS.filter(d => items.some(t => productKeyOf(d) === t.key && d.start === t.start));
     await ensurePages(cdocs);
     await prepareTables(cdocs);
+    await prepareSections(cdocs);
   } catch (e) {
     $("compareBody").innerHTML = `<p class="warn">본문을 불러오지 못했습니다: ${esc(e.message)}</p>`;
     return;
@@ -119,7 +120,7 @@ function renderCompare() {
     if (onlyDiff && (st.cls === "same" || st.cls === "none")) return "";
     const cells = results.map(R => {
       const row = R.rows.find(r => r.label === label);
-      if (row.images && row.images.length) return `<td>${tableImagesHtml(row, `${R.name} (${R.start || "미상"})`)}</td>`;
+      if (row.images && row.images.length) return `<td>${tableImagesHtml(row, `${R.name} (${R.start || "미상"})${row.section ? " " + row.section : ""}`)}</td>`;
       return `<td>${row.lines.length ? row.lines.map(lineHtml).join("") + (row.more > 0 ? `<p class="note">외 ${row.more}줄</p>` : "")
         : `<span class="na">${esc(emptyText(row))}</span>`}</td>`;
     }).join("");
@@ -148,7 +149,7 @@ function renderCompare() {
   $("compareBody").innerHTML = `
     ${results.some(R => (R.rows.find(r => r.id === "benefit") || {}).images?.length)
       ? `<div class="buttons" style="margin-bottom:8px"><button type="button" class="primary" id="sideBySideBtn">지급기준표 나란히 보기</button></div>` : ""}
-    <p class="summary">11개 항목 중 <b>${diffCount}</b>개 항목이 다릅니다. (원문 줄 기준 자동 판정 — 근거를 눌러 원문 확인)</p>
+    <p class="summary">${labels.length}개 항목 중 <b>${diffCount}</b>개 항목이 다릅니다. (원문 줄 기준 자동 판정 — 근거를 눌러 원문 확인)</p>
     <div class="table-scroll"><table class="facts compare"><thead>${head}</thead><tbody>${body || `<tr><td colspan="${results.length + 2}" class="empty">다른 항목이 없습니다.</td></tr>`}</tbody></table></div>
     ${diffHtml}
     ${checks.length ? `<h3>확인 필요</h3><ul>${checks.map(c => `<li class="check">${esc(c)}</li>`).join("")}</ul>` : ""}`;

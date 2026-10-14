@@ -4,20 +4,42 @@
 // 분석 대상 문서 (이 순서로 보여줌). 산출방법서는 계산식 위주라 제외
 const SOURCE_TYPES = ["사업방법서", "상품요약서", "약관"];
 
+// 사업방법서 2번 목차 "보험기간, 보험료 납입기간, 가입나이 및 보험료 납입주기" (보험기간·납입기간·가입나이가 함께 씀)
+const SEC2 = /^보험기간.*(납입기간|가입나이)/;
+const SECTION_MAX_LINES = 8;
+
 // 추출 항목: 공백 제거한 원문 줄에 정규식 적용
 const ITEM_DEFS = [
   // labelRe: '보험기간:'처럼 항목명으로 적힌 줄이 있으면 그 줄만 사용 ("보험기간 중 사망" 같은 언급 제외)
-  { id: "period", label: "보험기간", re: /보험기간|보장기간|세만기|년만기/, labelRe: /(보험기간|보장기간)[:：]/, words: "보험기간|보장기간", compare: true },
-  { id: "pay", label: "납입기간·주기", re: /납입기간|납입주기|납입방법|월납|연납|일시납|\d+년납|전기납/, labelRe: /(납입기간|납입주기|납입방법)[:：]/, words: "납입기간|납입주기|납입방법", compare: true },
-  { id: "age", label: "가입나이", re: /가입나이|가입연령|가입가능나이|가입가능연령/, labelRe: /(가입나이|가입연령)[:：]/, words: "가입나이|가입연령", compare: true },
+  // heading: 사업방법서 목차 제목(공백 제거, 앞 번호 뺀 부분)에 맞추는 별칭. 제목을 찾으면 다음 목차 제목 전까지가 내용
+  { id: "period", label: "보험기간", re: /보험기간|보장기간|세만기|년만기/, labelRe: /(보험기간|보장기간)[:：]/, words: "보험기간|보장기간", compare: true, heading: SEC2 },
+  { id: "pay", label: "납입기간·주기", re: /납입기간|납입주기|납입방법|월납|연납|일시납|\d+년납|전기납/, labelRe: /(납입기간|납입주기|납입방법)[:：]/, words: "납입기간|납입주기|납입방법", compare: true, heading: SEC2 },
+  { id: "age", label: "가입나이", re: /가입나이|가입연령|가입가능나이|가입가능연령/, labelRe: /(가입나이|가입연령)[:：]/, words: "가입나이|가입연령", compare: true, heading: SEC2 },
   { id: "limit", label: "가입한도", re: /가입한도|가입금액|최저보험료|최고보험료|보험료한도|가입가능금액/, labelRe: /(가입한도|가입금액|보험료한도)[:：]/ },
   { id: "benefit", label: "보험금 지급사유", re: /지급사유|보험금을지급|지급합니다|지급하는경우/, exclude: /지급하지않|면책/ },
   // 지급기준표를 못 찾았을 때만 쓰는 규칙 (기간 + 지급하지 않음 / 기간 + 비율)
   { id: "exempt", label: "면책", re: /면책기간|부담보|((\d+년|\d+개월|\d+일)(미만|이내|동안)|보장개시일).{0,80}(지급하지않|보장하지않|면책)|(\d+일|\d+년)(이|을)?지난날의다음날/ },
   { id: "reduce", label: "감액", re: /((\d+년|\d+개월)(미만|이내)).{0,80}(\d+%|감액)|(\d+%|감액).{0,40}(\d+년|\d+개월)(미만|이내)/ },
-  { id: "withdraw", label: "중도인출", re: /중도인출/ },
+  { id: "withdraw", label: "중도인출", re: /중도인출|계약자적립액(의)?(일부)?인출|적립금(의)?인출/, words: "중도인출|계약자적립액인출",
+    heading: /중도인출|계약자적립액(의)?(일부)?인출|적립금(의)?인출/ },
   { id: "extra", label: "추가납입", re: /추가납입/ },
   { id: "etc", label: "기타", re: /해지환급금|갱신|배당|납입면제|특약|저해지|무해지/ },
+  // ---- 사업방법서 목차 기준 항목 (목차 번호 순서) ----
+  { id: "kind", label: "종목·세목", toc: 1, re: /세목|보험종목의(명칭|구성)/, heading: /^보험종목의(명칭|구성)|종목및세목|세목에관한사항/ },
+  { id: "mandatory", label: "의무가입", toc: 3, re: /의무(가입|부가)/, heading: /의무(가입|부가)/ },
+  { id: "dividend", label: "배당", toc: 4, re: /계약자배당|배당금/, heading: /^(계약자)?배당/ },
+  { id: "premium", label: "보험료", toc: 5, re: /기본보험료|영업보험료|추가납입보험료|최저보험료|최고보험료/,
+    heading: /^보험료(및보험가입금액)?에관한사항|^보험료의(산출|계산)/, labelRe: /(기본보험료|영업보험료)[:：]/, words: "기본보험료|영업보험료", compare: true },
+  { id: "discount", label: "보험료 할인", toc: 6, re: /보험료할인|할인율|\d+%할인/, heading: /할인/ },
+  { id: "bonus", label: "유지보너스", toc: 7, re: /유지보너스/, heading: /유지보너스/, labelRe: /유지보너스[:：]/, words: "유지보너스", compare: true },
+  { id: "prepay", label: "보험료 선납", toc: 8, re: /선납/, heading: /선납/, labelRe: /선납[:：]/, words: "선납", compare: true },
+  { id: "revival", label: "해지계약 부활", toc: 9, re: /부활|효력회복/, heading: /부활|효력회복/ },
+  { id: "overdue_rate", label: "연체이율", toc: 10, re: /연체이(율|자율)/, heading: /연체이(율|자)/, labelRe: /연체이율[:：]/, words: "연체이율", compare: true },
+  { id: "loan", label: "보험계약대출", toc: 12, re: /보험계약대출|약관대출/, heading: /보험계약대출|약관대출/, labelRe: /(보험계약대출|약관대출)[:：]/, words: "보험계약대출|약관대출", compare: true },
+  { id: "partial_refund", label: "해약환급금 일부지급", toc: 13, re: /해(약|지)환급금(의)?일부(지급|만지급)|일부지급형/, heading: /환급금(의)?일부지급/,
+    labelRe: /일부지급[:：]/, words: "일부지급", compare: true },
+  { id: "simple_uw", label: "간편심사형", toc: 14, re: /간편(심사|고지)/, heading: /간편(심사|고지)|유병자/ },
+  { id: "savings_type", label: "적립형 계약", toc: 15, re: /적립형(계약|으로|전환)/, heading: /적립형/ },
 ];
 
 // 보험종류 구분 (상품명 → 본문 순으로 확인)
@@ -116,12 +138,19 @@ function payTablesOf(docs) {
 
 // 항목이 비었을 때 문구: 지급기준표에서 감액·면책 조건이 없으면 "없음", 그 밖에는 "문서 내 확인 불가"
 const NONE_TEXT = "없음 (보험금 지급기준표와 주석에 해당 조건 없음)";
-const emptyText = r => (r.none ? NONE_TEXT : "문서 내 확인 불가");
+const emptyText = r => (r.none ? r.noneText || NONE_TEXT : "문서 내 확인 불가");
 
 // ---------- 지급기준표 칸 복원 (글자 위치로 행·열 다시 맞춤) ----------
 // 지급기준표가 있는 쪽만 PDF를 다시 읽어, 머리행(급부명칭·지급사유·지급금액)의 가로 위치로 열을 나누고
 // 세로 간격이 넓은 곳에서 행을 나눔 → "사망보험금 | 피보험자가 사망하였을 때 | 보험가입금액"
-function structurePage(items, pageNo, st) {
+// PDF 쪽의 글자 조각 → 위치(y)가 같은 것끼리 한 줄 (위 → 아래 순서)
+// 글자 조각 잇기: 간격이 좁으면 붙이고(한 글자씩 저장된 PDF 대비), 넓으면 띄움
+const joinItems = its => its.reduce((acc, it, i) => {
+  const prev = its[i - 1];
+  return acc + (prev && it.x - (prev.x + prev.w) > 2.5 ? " " : "") + it.str;
+}, "").replace(/\s+/g, " ").trim();
+
+function buildPageLines(items) {
   const lines = [];
   for (const it of items) {
     if (!it.str || !it.str.trim() || !it.transform) continue;
@@ -130,18 +159,19 @@ function structurePage(items, pageNo, st) {
     if (!line) lines.push(line = { y, items: [] });
     line.items.push({ x, w: it.width || 0, h: it.height || Math.abs(it.transform[3]) || 10, str: it.str });
   }
-  // 글자 조각 잇기: 간격이 좁으면 붙이고(한 글자씩 저장된 PDF 대비), 넓으면 띄움
-  const join = its => its.reduce((acc, it, i) => {
-    const prev = its[i - 1];
-    return acc + (prev && it.x - (prev.x + prev.w) > 2.5 ? " " : "") + it.str;
-  }, "").replace(/\s+/g, " ").trim();
-  lines.sort((a, b) => b.y - a.y); // 위 → 아래
+  lines.sort((a, b) => b.y - a.y);
   for (const l of lines) {
     l.items.sort((a, b) => a.x - b.x);
-    l.text = join(l.items);
+    l.text = joinItems(l.items);
     l.compact = norm(l.text);
     l.h = Math.max(...l.items.map(i => i.h));
   }
+  return lines;
+}
+
+function structurePage(items, pageNo, st) {
+  const lines = buildPageLines(items);
+  const join = joinItems;
   const flush = () => {
     const seg = st.cur;
     if (!seg || !seg.raw.length) return;
@@ -201,6 +231,106 @@ function structurePage(items, pageNo, st) {
   flush();
 }
 
+// 쪽의 세로 범위(top~bottom, PDF 좌표)를 그림으로 잘라냄
+async function renderRegions(pdf, regions) {
+  const images = [], canvases = new Map();
+  for (const r of regions) {
+    try {
+      if (!canvases.has(r.page)) {
+        const page = await pdf.getPage(r.page);
+        const vp = page.getViewport({ scale: 2 });
+        const cv = document.createElement("canvas");
+        cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+        await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+        canvases.set(r.page, { cv, vp });
+      }
+      const { cv, vp } = canvases.get(r.page);
+      const top = Math.max(0, vp.convertToViewportPoint(0, r.top + 4)[1]);
+      const bottom = Math.min(cv.height, vp.convertToViewportPoint(0, r.bottom)[1] + 4);
+      if (bottom - top < 20) continue;
+      const out = document.createElement("canvas");
+      out.width = cv.width; out.height = Math.ceil(bottom - top);
+      const ctx = out.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(cv, 0, top, cv.width, out.height, 0, 0, out.width, out.height);
+      images.push({ page: r.page, src: out.toDataURL("image/jpeg", 0.85) });
+    } catch (e) { /* 그림을 못 만들면 글자 결과만 사용 */ }
+  }
+  canvases.clear();
+  return images;
+}
+
+const openPdf = async d => {
+  const data = d.file ? new Uint8Array(await d.file.arrayBuffer()) : new Uint8Array(await (await fetch(d.url)).arrayBuffer());
+  return pdfjsLib.getDocument({ data, CMapReaderFactory: EmbeddedCMapReaderFactory, cMapPacked: true }).promise;
+};
+
+// ---------- 사업방법서 목차 구역 ----------
+// "5. 보험료에 관한 사항"처럼 번호로 시작하는 짧은 제목 줄부터 다음 번호(+1~+3) 제목 전까지를 한 구역으로 봄.
+// 구역 안의 "가." "(1)" "①" 같은 하위 번호, 수식 속 "2." 같은 줄에서는 끊지 않음. 별첨(서식) 이후는 보지 않음.
+// 제목 글자는 한글·영문·괄호로 시작 (또는 "14. 2 형(간편심사형)…"처럼 '숫자+형/종')
+const TOP_HEAD = /^(\d{1,2})[.)]((?:\d+(?:형|종)|[가-힣A-Za-z(「“"]).*)$/;
+const NONE_BODY = /^(해당사항(이)?없음|해당(사항)?없음|없음|-|―)\.?$/;
+const SECTION_NONE_TEXT = "없음 (사업방법서 해당사항 없음)";
+
+function sectionsOf(d) {
+  if (d._sections) return d._sections;
+  const secs = [];
+  let cur = null;
+  for (const l of docLines(d)) {
+    if (/^[(\[【<]?별첨/.test(l.compact)) break;
+    const m = l.compact.match(TOP_HEAD);
+    if (m && l.compact.length <= 45 && !isTocLine(l.text)) {
+      const n = +m[1];
+      if ((!cur && n <= 3) || (cur && n > cur.num && n <= cur.num + 3)) {
+        cur = { num: n, title: l.text, key: m[2].replace(/[:：].*$/, ""), page: l.page, doc: d, lines: [] };
+        if (/[:：]\s*\S/.test(l.text)) cur.lines.push(l); // "1. 보험종목의 명칭: 내용"처럼 제목 줄에 내용이 있으면 포함
+        secs.push(cur);
+        continue;
+      }
+    }
+    if (cur) cur.lines.push(l);
+  }
+  return (d._sections = secs);
+}
+
+// 표가 들어 있는 구역(짧은 줄이 많음)은 그림으로도 잘라 둠
+const isTableLike = sec => sec.lines.length >= 6 && sec.lines.filter(l => l.text.length < 20).length / sec.lines.length >= 0.3;
+
+async function prepareSections(docs) {
+  for (const d of docs) {
+    if (d.docType !== "사업방법서" || d._sectionImgs !== undefined) continue;
+    d._sectionImgs = {};
+    const secs = sectionsOf(d).filter(isTableLike);
+    if (!secs.length) continue;
+    try {
+      const pdf = await openPdf(d);
+      const all = sectionsOf(d);
+      const linesOfPage = new Map();
+      const pageLines = async p => {
+        if (!linesOfPage.has(p)) { const pg = await pdf.getPage(p); linesOfPage.set(p, buildPageLines((await pg.getTextContent()).items)); pg.cleanup(); }
+        return linesOfPage.get(p);
+      };
+      const findHead = (lines, sec) => { const k = norm(sec.title); return lines.find(l => l.compact === k || (k.length > 8 && l.compact.startsWith(k.slice(0, 12)))); };
+      for (const sec of secs) {
+        const next = all[all.indexOf(sec) + 1];
+        const last = Math.min(next ? next.page : sec.lines[sec.lines.length - 1].page, sec.page + 2);
+        const regions = [];
+        for (let p = sec.page; p <= last; p++) {
+          const lines = await pageLines(p);
+          if (!lines.length) continue;
+          let top = Math.max(...lines.map(l => l.y + l.h)), bottom = Math.min(...lines.map(l => l.y)) - 4;
+          if (p === sec.page) { const h = findHead(lines, sec); if (!h) break; top = h.y + h.h; }
+          if (next && p === next.page) { const h = findHead(lines, next); if (h) bottom = h.y + h.h + 2; }
+          if (top - bottom > 10) regions.push({ page: p, top, bottom });
+        }
+        d._sectionImgs[sec.num] = await renderRegions(pdf, regions);
+      }
+      await pdf.destroy();
+    } catch (e) { /* 그림 없이 글자만 */ }
+  }
+}
+
 async function prepareTables(docs) {
   for (const d of docs) {
     if (d.docType !== "약관" || d._tableSegs !== undefined) continue;
@@ -209,8 +339,7 @@ async function prepareTables(docs) {
     if (!tables.length) continue;
     const pages = [...new Set(tables.flatMap(t => [t.page, ...t.rows.map(r => r.page), ...t.notes.map(n => n.page)]))].sort((a, b) => a - b);
     try {
-      const data = d.file ? new Uint8Array(await d.file.arrayBuffer()) : new Uint8Array(await (await fetch(d.url)).arrayBuffer());
-      const pdf = await pdfjsLib.getDocument({ data, CMapReaderFactory: EmbeddedCMapReaderFactory, cMapPacked: true }).promise;
+      const pdf = await openPdf(d);
       const st = { segs: [], cur: null, inNotes: false };
       let prev = null;
       for (const p of pages) {
@@ -221,33 +350,7 @@ async function prepareTables(docs) {
         prev = p;
       }
       // 표 영역을 그림으로 잘라 둠 (약관에 보이는 모양 그대로)
-      const canvases = new Map();
-      for (const seg of st.segs) {
-        seg.images = [];
-        for (const r of seg.regions || []) {
-          try {
-            if (!canvases.has(r.page)) {
-              const page = await pdf.getPage(r.page);
-              const vp = page.getViewport({ scale: 2 });
-              const cv = document.createElement("canvas");
-              cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
-              await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
-              canvases.set(r.page, { cv, vp });
-            }
-            const { cv, vp } = canvases.get(r.page);
-            const top = Math.max(0, vp.convertToViewportPoint(0, r.top + 4)[1]);
-            const bottom = Math.min(cv.height, vp.convertToViewportPoint(0, r.bottom)[1] + 4);
-            if (bottom - top < 20) continue;
-            const out = document.createElement("canvas");
-            out.width = cv.width; out.height = Math.ceil(bottom - top);
-            const ctx = out.getContext("2d");
-            ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, out.width, out.height);
-            ctx.drawImage(cv, 0, top, cv.width, out.height, 0, 0, out.width, out.height);
-            seg.images.push({ page: r.page, src: out.toDataURL("image/jpeg", 0.85) });
-          } catch (e) { /* 그림을 못 만들면 글자 결과만 사용 */ }
-        }
-      }
-      canvases.clear();
+      for (const seg of st.segs) seg.images = await renderRegions(pdf, seg.regions || []);
       await pdf.destroy();
       d._tableSegs = st.segs;
     } catch (e) {
@@ -357,6 +460,26 @@ function analyzeProduct(key, start) {
     }
     let { hits, more } = def.labelRe ? findLines(base, def.labelRe) : { hits: [] };
     const labelled = hits.length > 0;
+    // 사업방법서 목차 구역 (항목명 줄이 없을 때)
+    if (!hits.length && def.heading) {
+      const sec = base.filter(d => d.docType === "사업방법서").flatMap(sectionsOf).find(x => def.heading.test(x.key));
+      if (sec) {
+        const body = norm(sec.lines.map(l => l.text).join(""));
+        const row = { id: def.id, label: def.label, section: sec.title, imgSource: "사업방법서",
+          images: (sec.doc._sectionImgs && sec.doc._sectionImgs[sec.num] || []).map(im => ({ ...im, doc: sec.doc })) };
+        if (!body || NONE_BODY.test(body)) {
+          Object.assign(row, { lines: [], more: 0, none: !!body, noneText: SECTION_NONE_TEXT,
+            ...(body ? {} : { images: [] }) });
+          if (!body) R.checks.push(`${def.label}: 사업방법서 '${sec.title}' 내용 없음`);
+        } else {
+          const ls = sec.lines.slice(0, SECTION_MAX_LINES);
+          Object.assign(row, { lines: ls.map(l => ({ text: l.text, ref: refOf({ doc: sec.doc, page: l.page }), hit: { doc: sec.doc, page: l.page } })),
+            more: sec.lines.length - ls.length });
+        }
+        R.rows.push(row);
+        continue;
+      }
+    }
     if (!hits.length) ({ hits, more } = findLines(base, def.re, 3, def.exclude));
     R.rows.push({ id: def.id, label: def.label, lines: hits.map(h => ({ text: h.text, ref: refOf(h), hit: h })), more });
     if (!hits.length) R.checks.push(`${def.label}: 문서 내 확인 불가`);
@@ -400,10 +523,11 @@ function registerImgSet(title, images) { IMG_SETS.push({ title, images }); retur
 function tableImagesHtml(r, title = "보험금 지급기준표") {
   const id = registerImgSet(title, r.images);
   const pages = r.images.map(i => i.page).join(", p.");
-  const thumb = `<button type="button" class="tblthumb" data-imgset="${id}" title="크게 보기"><img src="${r.images[0].src}" alt="보험금 지급기준표 미리보기"></button>`;
+  const what = r.section ? "표" : "지급기준표";
+  const thumb = `<button type="button" class="tblthumb" data-imgset="${id}" title="크게 보기"><img src="${r.images[0].src}" alt="${what} 미리보기"></button>`;
   const text = r.lines.length ? `<details class="tbltext"><summary>글자로 보기 (복사용 · 칸 구분이 정확하지 않을 수 있음)</summary>${r.lines.map(lineHtml).join("")}</details>` : "";
-  return `<div class="tblwrap">${thumb}<div class="tblmeta"><button type="button" class="mini primary" data-imgset="${id}">지급기준표 보기</button>` +
-    `<span class="note">약관 p.${pages}${r.images.length > 1 ? ` (${r.images.length}쪽)` : ""}</span></div></div>` + text +
+  return `<div class="tblwrap">${thumb}<div class="tblmeta"><button type="button" class="mini primary" data-imgset="${id}">${what} 보기</button>` +
+    `<span class="note">${esc(r.imgSource || "약관")} p.${pages}${r.images.length > 1 ? ` (${r.images.length}쪽)` : ""}</span></div></div>` + text +
     (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "");
 }
 
@@ -412,8 +536,8 @@ function openImgModal(title, sets) {
   $("modalTitle").textContent = title;
   $("modalBody").style.gridTemplateColumns = `repeat(${sets.length}, minmax(${sets.length > 1 ? 420 : 300}px, 1fr))`;
   $("modalBody").innerHTML = sets.map(s => `<div class="modal-col">${sets.length > 1 ? `<h4>${esc(s.title)}</h4>` : ""}` +
-    (s.images.length ? s.images.map(im => `<img src="${im.src}" alt="보험금 지급기준표 (약관 p.${im.page})">` +
-      `<p class="note">약관 p.${im.page} <a href="#" data-open="${DOCS.indexOf(im.doc)}" data-page="${im.page}">원문 열기</a></p>`).join("")
+    (s.images.length ? s.images.map(im => `<img src="${im.src}" alt="${esc(im.doc.docType)} p.${im.page}">` +
+      `<p class="note">${esc(im.doc.docType)} p.${im.page} <a href="#" data-open="${DOCS.indexOf(im.doc)}" data-page="${im.page}">원문 열기</a></p>`).join("")
       : `<p class="na">지급기준표 그림 없음</p>`) + `</div>`).join("");
   $("imgModal").hidden = false;
   $("modalClose").focus();
@@ -440,6 +564,7 @@ async function showAnalysis(key, start) {
     const vdocs = DOCS.filter(d => productKeyOf(d) === key && d.start === start);
     await ensurePages(vdocs);
     await prepareTables(vdocs);
+    await prepareSections(vdocs);
   } catch (e) {
     $("analysisBody").innerHTML = `<p class="warn">본문을 불러오지 못했습니다: ${esc(e.message)}</p>`;
     return;
@@ -451,7 +576,7 @@ async function showAnalysis(key, start) {
   $("analysisVersion").innerHTML = versions.map(v => `<option value="${esc(v)}"${v === start ? " selected" : ""}>판매개시일 ${esc(v || "미상")}</option>`).join("");
   const rows = R.rows.map(r => `<tr>
       <td>${esc(r.label)}</td>
-      <td>${r.images && r.images.length ? tableImagesHtml(r, `${R.name} (${R.start || "미상"}) 보험금 지급기준표`) : r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
+      <td>${r.images && r.images.length ? tableImagesHtml(r, `${R.name} (${R.start || "미상"}) ${r.section ? "사업방법서 " + r.section : "보험금 지급기준표"}`) : r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
         + (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "")
  : `<span class="na">${esc(emptyText(r))}</span>`}</td>
       <td>${r.lines.length ? esc([...new Set(r.lines.map(l => l.ref))].join(", ")) : "-"}</td>
@@ -503,9 +628,23 @@ const ANALYSIS_PROMPT = `당신은 보험상품 문서를 분석하는 보험 �
 6. 보험금 지급사유 (담보별로 어떤 경우에 얼마를 지급하는지, 지급 횟수·감액 지급 기간 포함)
 7. 면책 사유 (보험금을 지급하지 않는 경우) 및 면책기간·부책기간
 8. 감액 조건 (감액지급 기간과 비율, 감액 사유)
-9. 중도인출 (가능 여부, 가능 시점, 한도, 횟수, 수수료·해지환급금 영향)
+9. 중도인출 (계약자적립액 인출 포함 — 가능 여부, 가능 시점, 한도, 횟수, 수수료·해지환급금 영향)
 10. 추가납입 (가능 여부, 한도, 가능 기간, 추가납입 시 비용 구조)
 11. 기타 특이사항 (해지환급금 구조, 갱신 조건, 계약자배당, 특약 구성, 면제 조건 등)
+— 아래 12~24는 사업방법서 목차 기준 항목입니다. 사업방법서에 "해당사항 없음"으로 적혀 있으면 "없음 (사업방법서 해당사항 없음)"으로 표기합니다.
+12. 종목·세목 (보험종목의 명칭과 세목, 형 구분)
+13. 의무가입
+14. 배당
+15. 보험료 (기본보험료·영업보험료·추가납입보험료 등의 정의와 구성)
+16. 보험료 할인
+17. 유지보너스 (보험료 납입기간별 발생일과 금액)
+18. 보험료 선납 (선납 가능 기간, 할인 방법)
+19. 해지계약 부활(효력회복) (청약 가능 기간 등)
+20. 연체이율
+21. 보험계약대출 (대출 한도, 상환·차감 방법)
+22. 해약환급금 일부지급 (지급 비율, 적용 기간)
+23. 간편심사형 (대상, 심사 방식)
+24. 적립형 계약 (전환 조건, 보험기간·납입기간·전환나이)
 
 ## 출력 형식
 ### 한눈에 보기
@@ -525,6 +664,19 @@ const ANALYSIS_PROMPT = `당신은 보험상품 문서를 분석하는 보험 �
 | 중도인출 | | |
 | 추가납입 | | |
 | 기타 | | |
+| 종목·세목 | | |
+| 의무가입 | | |
+| 배당 | | |
+| 보험료 | | |
+| 보험료 할인 | | |
+| 유지보너스 | | |
+| 보험료 선납 | | |
+| 해지계약 부활 | | |
+| 연체이율 | | |
+| 보험계약대출 | | |
+| 해약환급금 일부지급 | | |
+| 간편심사형 | | |
+| 적립형 계약 | | |
 
 ### 유의사항
 (가입자가 오해하기 쉬운 조건, 제한, 불리한 조건을 3~5개 이내로 정리)
