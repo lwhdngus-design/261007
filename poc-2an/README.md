@@ -394,6 +394,7 @@ dummy-data 폴더의 products.csv, coverages.csv, documents.csv, portfolio.csv �
 - 실제 PDF 첫 색인은 브라우저 추출 속도에 좌우됩니다(파일당 0.3~1초 예상 → 수천 개면 수십 분). 진행률과 남은 시간이 화면에 표시되고, 색인된 문서부터 바로 검색됩니다.
 
 **참고**
+- 브라우저: **크롬으로 엽니다** (설치 경로·레지스트리에서 찾고, 없으면 Windows 기본 브라우저). 기본 브라우저로 열려면 `python serve.py --browser default`
 - 폴더 바꾸기: `change-folder.bat` 실행 후 경로 붙여넣기 (또는 `python serve.py --folder "경로"`). **폴더별 색인은 따로 보관**되므로 예전 폴더로 돌아가도 다시 읽지 않습니다.
 - 자동 연결 폴더는 앱 폴더의 `docs-folder.txt`에 저장됩니다. 저장소를 다른 위치에 새로 내려받으면 이 파일과 색인(`.docs-cache`)이 없으므로 처음에 경로를 다시 묻고 새로 읽습니다.
 - 이전 버전의 캐시(`.docs-cache\*.json`)는 첫 실행 때 자동으로 색인으로 옮겨집니다.

@@ -20,6 +20,8 @@ import sqlite3
 import sys
 import threading
 import urllib.parse
+import shutil
+import subprocess
 import webbrowser
 from pathlib import Path
 
@@ -382,6 +384,44 @@ def make_handler(root):
     return Handler
 
 
+# ---------- 브라우저 열기 (크롬 우선) ----------
+def find_chrome():
+    """설치된 크롬 실행 파일 경로 (없으면 None)"""
+    cands = []
+    if os.name == "nt":
+        for base in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"), os.environ.get("LOCALAPPDATA")):
+            if base:
+                cands.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        try:  # 레지스트리에 등록된 설치 경로
+            import winreg
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as k:
+                        cands.append(Path(winreg.QueryValue(k, None)))
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+    elif sys.platform == "darwin":
+        cands.append(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+    else:
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            if shutil.which(name):
+                cands.append(Path(shutil.which(name)))
+    return next((str(c) for c in cands if c and c.is_file()), None)
+
+
+def open_browser(url, which):
+    if which == "chrome":
+        chrome = find_chrome()
+        if chrome:
+            subprocess.Popen([chrome, url])
+            return "크롬"
+        print("크롬을 찾지 못해 기본 브라우저로 엽니다.")
+    webbrowser.open(url)
+    return "기본 브라우저"
+
+
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
@@ -391,6 +431,8 @@ def main():
     ap.add_argument("--folder", help="기초서류 PDF 폴더 경로 (한 번 지정하면 저장됨)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--browser", choices=["chrome", "default"], default="chrome",
+                    help="열 브라우저: chrome(기본, 없으면 기본 브라우저) / default(Windows 기본 브라우저)")
     args = ap.parse_args()
 
     root = docs_root(args.folder)
@@ -411,7 +453,7 @@ def main():
     print(f"앱 주소: {url}")
     print("이 창을 닫으면 앱이 종료됩니다. (폴더 변경: python serve.py --folder \"경로\")")
     if not args.no_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.8, lambda: print(f"{open_browser(url, args.browser)}로 열었습니다.")).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
