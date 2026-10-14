@@ -86,8 +86,7 @@ function inferEndDates() {
 }
 
 // ---------- PDF 텍스트 추출 ----------
-async function extractPages(file) {
-  const data = new Uint8Array(await file.arrayBuffer());
+async function extractPages(data) {
   const pdf = await pdfjsLib.getDocument({ data, CMapReaderFactory: EmbeddedCMapReaderFactory, cMapPacked: true }).promise;
   const pages = [];
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -108,43 +107,100 @@ async function extractPages(file) {
   return pages;
 }
 
-async function loadFolder(fileList) {
-  const files = [...fileList].filter(f => /\.pdf$/i.test(f.name));
-  DOCS.forEach(d => d.url && URL.revokeObjectURL(d.url));
-  DOCS.length = 0;
-  if (!files.length) {
-    $("docsStatus").textContent = "선택한 폴더에 PDF 파일이 없습니다.";
-    renderDocs();
-    return;
+function makeDoc(path, extra) {
+  const name = path.split("/").pop();
+  const productName = productNameOf(name);
+  return { path, name, docType: docTypeOf(name), productName, productKey: norm(productName),
+           ...saleDatesOf(path), pages: [], error: "", ...extra };
+}
+
+async function readPages(doc, getBytes) {
+  try {
+    doc.pages = await extractPages(await getBytes());
+    if (!doc.pages.join("").trim()) doc.error = "본문 텍스트 없음 (스캔 이미지 PDF일 수 있음)";
+  } catch (e) {
+    doc.error = "읽기 실패: " + (e && e.message ? e.message : e);
   }
-  const root = (files[0].webkitRelativePath || files[0].name).split("/")[0];
-  $("docsProgress").hidden = false;
-  let failed = 0;
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const path = file.webkitRelativePath || file.name;
-    $("docsStatus").textContent = `읽는 중 ${i + 1}/${files.length} — ${path}`;
-    $("docsBar").style.width = `${(i / files.length) * 100}%`;
-    const productName = productNameOf(file.name);
-    const doc = { file, path, name: file.name, docType: docTypeOf(file.name), productName,
-                  productKey: norm(productName), ...saleDatesOf(path), pages: [], error: "" };
-    try {
-      doc.pages = await extractPages(file);
-      if (!doc.pages.join("").trim()) doc.error = "본문 텍스트 없음 (스캔 이미지 PDF일 수 있음)";
-    } catch (e) {
-      doc.error = "읽기 실패: " + (e && e.message ? e.message : e);
-    }
-    if (doc.error) failed++;
-    doc.searchText = norm(doc.path + " " + doc.pages.join(" "));
-    DOCS.push(doc);
-  }
+}
+
+function finishLoading(label) {
+  DOCS.forEach(d => { d.searchText = norm(d.path + " " + d.pages.join(" ")); });
   inferEndDates();
   $("docsBar").style.width = "100%";
   setTimeout(() => { $("docsProgress").hidden = true; }, 600);
-  const noDate = DOCS.filter(d => !d.start).length;
-  $("docsStatus").textContent = `연결됨: ${root} — PDF ${DOCS.length}개` +
+  const failed = DOCS.filter(d => d.error).length, noDate = DOCS.filter(d => !d.start).length;
+  $("docsStatus").textContent = `${label} — PDF ${DOCS.length}개` +
     (failed ? ` (본문 못 읽음 ${failed}개)` : "") + (noDate ? ` · 판매일자 인식 못함 ${noDate}개` : "");
-  renderDocs();
+  renderAll();
+}
+
+function resetDocs() {
+  DOCS.forEach(d => d.url && d.url.startsWith("blob:") && URL.revokeObjectURL(d.url));
+  DOCS.length = 0;
+}
+
+const progress = (i, n, path) => {
+  $("docsProgress").hidden = false;
+  $("docsStatus").textContent = `읽는 중 ${i + 1}/${n} — ${path}`;
+  $("docsBar").style.width = `${(i / n) * 100}%`;
+};
+
+// 방법 1) [폴더 선택] — 파일을 매번 다시 선택 (index.html을 더블클릭해서 연 경우)
+async function loadFolder(fileList) {
+  const files = [...fileList].filter(f => /\.pdf$/i.test(f.name));
+  resetDocs();
+  if (!files.length) {
+    $("docsStatus").textContent = "선택한 폴더에 PDF 파일이 없습니다.";
+    renderAll();
+    return;
+  }
+  const root = (files[0].webkitRelativePath || files[0].name).split("/")[0];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const doc = makeDoc(file.webkitRelativePath || file.name, { file });
+    progress(i, files.length, doc.path);
+    await readPages(doc, async () => new Uint8Array(await file.arrayBuffer()));
+    DOCS.push(doc);
+  }
+  finishLoading(`연결됨: ${root}`);
+}
+
+// 방법 2) 자동 연결 — start.bat(serve.py)로 연 경우, 지정 폴더를 바로 읽고 읽은 글자는 캐시에 저장
+const SERVER_MODE = location.protocol.startsWith("http");
+
+async function loadFromServer() {
+  const res = await fetch("api/docs", { cache: "no-store" });
+  if (!res.ok) throw new Error("폴더 목록을 가져오지 못했습니다 (HTTP " + res.status + ")");
+  const { root, folder, files } = await res.json();
+  resetDocs();
+  $("docsFolder").textContent = folder;
+  const todo = files.filter(f => !f.pages);
+  let done = 0;
+  for (const f of files) {
+    const url = "docs/" + f.path.split("/").map(encodeURIComponent).join("/");
+    const doc = makeDoc(f.path, { url });
+    if (f.pages) {
+      doc.pages = f.pages; doc.error = f.error || "";
+    } else {
+      progress(done++, todo.length, f.path);
+      await readPages(doc, async () => new Uint8Array(await (await fetch(url)).arrayBuffer()));
+      // 다음 실행부터 다시 읽지 않도록 캐시 저장 (내 PC의 앱 폴더 .docs-cache)
+      fetch("api/cache", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: f.path, size: f.size, mtime: f.mtime, pages: doc.pages, error: doc.error }) })
+        .catch(() => {});
+    }
+    DOCS.push(doc);
+  }
+  finishLoading(`자동 연결: ${root}` + (todo.length ? ` (새로 읽음 ${todo.length}개)` : ""));
+}
+
+if (SERVER_MODE) {
+  $("serverMode").hidden = false;
+  $("docsNote").textContent = "start.bat으로 실행 중 — 지정 폴더를 자동으로 읽습니다. 읽은 글자는 내 PC의 앱 폴더(.docs-cache)에 저장돼 " +
+    "다음 실행부터 바뀐 파일만 다시 읽습니다. 외부로는 아무것도 전송되지 않습니다.";
+  $("reloadDocsBtn").addEventListener("click", () =>
+    loadFromServer().catch(err => { $("docsStatus").textContent = "자동 연결 실패: " + err.message; }));
+  loadFromServer().catch(err => { $("docsStatus").textContent = "자동 연결 실패: " + err.message; });
 }
 
 // ---------- 검색 ----------
@@ -232,7 +288,7 @@ const productKeyOf = d => d.productKey || norm(d.name);
 // PDF 열기: 메모리의 파일을 새 탭으로 (일치한 페이지로 이동). 결과·답변·분석 화면 공통
 function openDoc(index, page) {
   const d = DOCS[index];
-  d.url ||= URL.createObjectURL(d.file);
+  d.url ||= URL.createObjectURL(d.file); // 서버 모드는 처음부터 docs/... 주소가 있음
   window.open(`${d.url}#page=${page || 1}`, "_blank");
 }
 document.addEventListener("click", e => {

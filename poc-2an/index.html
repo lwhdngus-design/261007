@@ -55,6 +55,7 @@
   .snip .pg { color: var(--accent); font-size: 12px; margin-right: 4px; white-space: nowrap; }
   .warn { color: #b45309; font-size: 12px; }
   td.actions { white-space: nowrap; }
+  button.mini { padding: 2px 8px; font-size: 12px; margin-left: 6px; }
   td.actions button { margin: 0 0 4px; }
   .interp { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
   .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px;
@@ -134,9 +135,11 @@
   <section class="panel docs-load">
     <div>
       <b>기초서류 PDF 폴더 연결</b>
-      <p class="note">사업방법서·약관·상품요약서 폴더를 선택하면 브라우저가 PC 안에서 본문을 읽어 위 검색에 포함합니다.
+      <p class="note" id="docsNote">사업방법서·약관·상품요약서 폴더를 선택하면 브라우저가 PC 안에서 본문을 읽어 위 검색에 포함합니다.
         파일은 어디에도 업로드·저장되지 않으며, 창을 닫으면 사라집니다.</p>
-      <p class="note" id="docsStatus">연결된 폴더 없음</p>
+      <p class="note" id="serverMode" hidden>자동 연결 폴더: <span id="docsFolder"></span>
+        <button type="button" id="reloadDocsBtn" class="mini">새로고침</button></p>
+      <p class="note" id="docsStatus">연결된 폴더 없음 — start.bat으로 실행하면 지정 폴더가 자동 연결됩니다</p>
       <div class="progress" id="docsProgress" hidden><div id="docsBar"></div></div>
     </div>
     <label class="folder-btn">
