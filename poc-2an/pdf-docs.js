@@ -58,13 +58,21 @@ function saleDatesOf(path) {
 }
 
 // 상품명 추정: 파일명에서 확장자·문서유형·날짜·구분기호를 뺀 나머지
+// 문서유형을 뜻하는 말 (긴 말부터 지워야 "보험약관"에서 "보험"만 남지 않음)
+const DOC_WORDS = ["보험약관", "보통약관", "특별약관", "기본약관", "특약약관", ...DOC_TYPES];
+
 function productNameOf(fileName) {
   let s = fileName.replace(/\.pdf$/i, "");
+  // "[보험약관] (무)…", "【사업방법서】…" 같은 대괄호 머리표 제거 (상품명의 둥근 괄호 "(무)"는 유지)
+  s = s.replace(/[\[【〔［][^\]】〕］]*[\]】〕］]/g, " ");
   for (const d of findDates(s).reverse()) s = s.slice(0, d.s) + " " + s.slice(d.e);
-  for (const t of DOC_TYPES) s = s.split(t).join(" ");
+  for (const t of DOC_WORDS) s = s.split(t).join(" ");
   s = s.replace(/(보통|특별)\s*$/, "").replace(/[_\-\s~]+/g, " ").trim();
   return s;
 }
+
+// 같은 상품으로 묶는 키: 공백 무시, "무배당 ○○"과 "(무)○○"은 같은 상품
+const productKeyFrom = name => norm(name).replace(/^무배당/, "(무)");
 
 function dayBefore(iso) {
   const d = new Date(iso + "T00:00:00");
@@ -110,7 +118,7 @@ async function extractPages(data) {
 function makeDoc(path, extra) {
   const name = path.split("/").pop();
   const productName = productNameOf(name);
-  return { path, name, docType: docTypeOf(name), productName, productKey: norm(productName),
+  return { path, name, docType: docTypeOf(name), productName, productKey: productKeyFrom(productName),
            ...saleDatesOf(path), pages: [], error: "", ...extra };
 }
 
