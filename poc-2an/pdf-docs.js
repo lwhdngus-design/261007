@@ -93,7 +93,15 @@ async function extractPages(file) {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const tc = await page.getTextContent();
-    pages.push(tc.items.map(it => it.str + (it.hasEOL ? "\n" : "")).join(""));
+    // 글자 위치(y)가 바뀌면 줄바꿈 → 원문 줄 단위로 근거를 보여줄 수 있게 함
+    let text = "", lastY = null;
+    for (const it of tc.items) {
+      const y = it.transform ? it.transform[5] : null;
+      if (lastY !== null && y !== null && Math.abs(y - lastY) > 2 && !text.endsWith("\n")) text += "\n";
+      text += it.str + (it.hasEOL ? "\n" : "");
+      if (y !== null && it.str) lastY = y;
+    }
+    pages.push(text);
     page.cleanup();
   }
   await pdf.destroy();
@@ -158,16 +166,22 @@ function snippets(pageText, terms, max) {
   return out;
 }
 
-function searchDocs({ keyword, from, to, category, status }) {
-  const terms = keyword.trim().split(/\s+/).map(norm).filter(Boolean);
+// 판매기간·분류·판매상태 조건 (키워드 검색과 질문 검색이 함께 사용)
+function docMatchesFilters(d, { from, to, category, status }) {
+  // 판매기간 겹침: 판매개시일 <= To AND (종료일 빈값 OR 종료일 >= From). 판매일자를 모르면 기간 검색에서 제외
+  if ((from || to) && !(d.start && (!to || d.start <= to) && (!from || !d.end || d.end >= from))) return false;
+  if (category && !d.path.includes(category)) return false;
+  if (status && !(d.start && (status === "판매중"
+    ? d.start <= TODAY && (!d.end || d.end >= TODAY)
+    : d.end && d.end < TODAY))) return false;
+  return true;
+}
+
+function searchDocs(q) {
+  const terms = q.keyword.trim().split(/\s+/).map(norm).filter(Boolean);
   return DOCS
     .filter(d => terms.every(t => d.searchText.includes(t)))
-    // 판매기간 겹침: 판매개시일 <= To AND (종료일 빈값 OR 종료일 >= From). 판매일자를 모르면 기간 검색에서 제외
-    .filter(d => (!from && !to) || (d.start && (!to || d.start <= to) && (!from || !d.end || d.end >= from)))
-    .filter(d => !category || d.path.includes(category))
-    .filter(d => !status || (d.start && (status === "판매중"
-      ? d.start <= TODAY && (!d.end || d.end >= TODAY)
-      : d.end && d.end < TODAY)))
+    .filter(d => docMatchesFilters(d, q))
     .map(d => ({ doc: d, terms, nameHit: terms.length > 0 && terms.every(t => norm(d.name).includes(t)) }))
     // 정렬: 파일명(상품명) 일치 우선 → 판매개시일 최신순
     .sort((a, b) => (b.nameHit - a.nameHit) || (b.doc.start || "").localeCompare(a.doc.start || ""));
@@ -176,9 +190,11 @@ function searchDocs({ keyword, from, to, category, status }) {
 const MAX_ROWS = 200;
 
 function renderDocs() {
-  if (!DOCS.length) { $("docsPanel").hidden = true; return; }
+  const cur = currentQuery();
+  // 질문(특징) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
+  if (!DOCS.length || cur.mode === "question") { $("docsPanel").hidden = true; return; }
   $("docsPanel").hidden = false;
-  const rows = searchDocs(readForm());
+  const rows = searchDocs(cur.form);
   $("docsSummary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 불러온 PDF ${DOCS.length}건` +
     (rows.length > MAX_ROWS ? ` (상위 ${MAX_ROWS}건만 표시)` : "");
   if (!rows.length) {
@@ -204,18 +220,26 @@ function renderDocs() {
       <td>${esc(d.docType)}</td>
       <td>${esc(d.productName || d.name)}<div class="path">${esc(d.path)}</div></td>
       <td>${snipHtml}</td>
-      <td><button type="button" data-open="${DOCS.indexOf(d)}" data-page="${firstPage}">열기</button></td>
+      <td class="actions"><button type="button" data-open="${DOCS.indexOf(d)}" data-page="${firstPage}">열기</button>
+        <button type="button" data-analyze="${esc(productKeyOf(d))}" data-start="${esc(d.start)}">분석</button></td>
     </tr>`;
   }).join("");
 }
 
-// PDF 열기: 메모리의 파일을 새 탭으로 (일치한 첫 페이지로 이동)
-$("docsResults").addEventListener("click", e => {
-  const btn = e.target.closest("button[data-open]");
-  if (!btn) return;
-  const d = DOCS[+btn.dataset.open];
+// 같은 상품으로 묶는 키 (파일명에서 상품명을 못 뽑으면 파일명 전체)
+const productKeyOf = d => d.productKey || norm(d.name);
+
+// PDF 열기: 메모리의 파일을 새 탭으로 (일치한 페이지로 이동). 결과·답변·분석 화면 공통
+function openDoc(index, page) {
+  const d = DOCS[index];
   d.url ||= URL.createObjectURL(d.file);
-  window.open(`${d.url}#page=${btn.dataset.page}`, "_blank");
+  window.open(`${d.url}#page=${page || 1}`, "_blank");
+}
+document.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-open], a[data-open]");
+  if (!btn) return;
+  e.preventDefault();
+  openDoc(+btn.dataset.open, btn.dataset.page);
 });
 
 $("folderInput").addEventListener("change", e => {

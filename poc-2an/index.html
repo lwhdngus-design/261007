@@ -54,7 +54,33 @@
   .snip { font-size: 13px; margin: 0 0 4px; }
   .snip .pg { color: var(--accent); font-size: 12px; margin-right: 4px; white-space: nowrap; }
   .warn { color: #b45309; font-size: 12px; }
+  td.actions { white-space: nowrap; }
+  td.actions button { margin: 0 0 4px; }
+  .interp { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px;
+    background: var(--accent-weak); color: var(--text); font-size: 12px; }
+  .chip b { color: var(--accent); font-weight: 600; }
+  .chip.ignored { background: var(--off-bg); color: var(--muted); text-decoration: line-through; }
+  .chip button { border: 0; background: transparent; padding: 0 6px; color: var(--muted); font-size: 13px; }
+  .pcard { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .pcard h3 { margin: 0 0 4px; font-size: 15px; }
+  .pcard .meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .pcard .buttons { margin-top: 8px; flex-wrap: wrap; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 4px; background: var(--on-bg); color: var(--on); font-size: 12px; margin-right: 4px; }
+  .analysis-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .analysis-head select { width: auto; }
+  #analysisBody h3 { font-size: 14px; margin: 18px 0 6px; }
+  #analysisBody ul { margin: 4px 0; padding-left: 20px; }
+  #analysisBody li { margin-bottom: 4px; }
+  table.facts td { vertical-align: top; }
+  table.facts td:first-child { white-space: nowrap; font-weight: 600; width: 110px; }
+  table.facts td:last-child { font-size: 12px; color: var(--muted); width: 160px; }
+  .line { margin: 0 0 4px; }
+  .ref { color: var(--accent); font-size: 12px; white-space: nowrap; }
+  .na { color: var(--muted); }
+  .check { color: #b45309; }
   @media (max-width: 760px) {
+    table.facts td:last-child { display: none; }
     .docs-load { flex-direction: column; align-items: stretch; text-align: left; }
     table.docs th:nth-child(4), table.docs td:nth-child(4) { min-width: 180px; }
     form.search { grid-template-columns: 1fr; }
@@ -73,8 +99,8 @@
   <section class="panel">
     <form class="search" id="searchForm">
       <div>
-        <label for="keyword">키워드 (여러 단어는 AND)</label>
-        <input id="keyword" placeholder="예) 종신, 유사암, 저해지" autocomplete="off" />
+        <label for="keyword">키워드 또는 질문</label>
+        <input id="keyword" placeholder="예) 유사암 / 제1보기와 제2보기가 구분된 종신보험이 뭐였지?" autocomplete="off" />
       </div>
       <div>
         <label>판매기간</label>
@@ -101,6 +127,7 @@
         <button type="button" id="resetBtn">초기화</button>
       </div>
     </form>
+    <div class="interp" id="interp" hidden></div>
   </section>
 
   <!-- 기초서류 PDF 폴더 불러오기 (PC 안에서만 처리, 업로드 없음) -->
@@ -116,6 +143,27 @@
       폴더 선택
       <input type="file" id="folderInput" webkitdirectory multiple hidden />
     </label>
+  </section>
+
+  <!-- 질문 답변: 특징으로 찾은 상품 (기초서류 PDF 기준) -->
+  <section class="panel" id="answerPanel" hidden>
+    <h2>질문 답변 — 상품별</h2>
+    <p class="summary" id="answerSummary"></p>
+    <div id="answerCards"></div>
+  </section>
+
+  <!-- 상품 분석: 사업방법서·상품요약서에서 핵심 특징 추출 -->
+  <section class="panel" id="analysisPanel" hidden>
+    <div class="analysis-head">
+      <h2 id="analysisTitle">상품 분석</h2>
+      <div class="buttons">
+        <select id="analysisVersion" aria-label="판매일자"></select>
+        <button type="button" id="copyMdBtn">결과 복사</button>
+        <button type="button" id="copyPromptBtn">AI용 프롬프트 복사</button>
+        <button type="button" id="closeAnalysisBtn">닫기</button>
+      </div>
+    </div>
+    <div id="analysisBody"></div>
   </section>
 
   <!-- 2. 결과 테이블 -->
@@ -209,11 +257,12 @@ const searchIndex = DB.products.map(p => {
 // 상품분류 드롭다운: 괄호 앞 대분류 기준 (예: "건강(간편심사)" → "건강"), 필터는 포함 일치
 const mainCategory = c => c.split("(")[0];
 
-function search({ keyword, from, to, category, status }) {
+function search({ keyword, from, to, category, status }, features = []) {
   // 여러 단어는 공백으로 분리 → 각 단어도 공백 제거 → 모두 포함(AND)
   const terms = keyword.trim().split(/\s+/).map(norm).filter(Boolean);
   return searchIndex
     .filter(x => terms.every(t => x.all.includes(t)))
+    .filter(x => features.every(f => featureMatches(f, x.all)))
     .filter(x => inPeriod(x.product, from, to))
     .filter(x => !category || x.product.category.includes(category))
     .filter(x => !status || saleStatus(x.product) === status)
@@ -242,9 +291,10 @@ function readForm() {
 }
 
 function render() {
-  const q = readForm();
+  const cur = currentQuery();
+  const q = cur.form;
   const terms = q.keyword.trim().split(/\s+/).map(norm).filter(Boolean);
-  const rows = search(q);
+  const rows = search(q, cur.mode === "question" ? cur.Q.features : []);
   $("summary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 전체 ${DB.products.length}건`;
   if (!rows.length) {
     $("results").innerHTML = `<tr><td colspan="6" class="empty">조건에 맞는 상품이 없습니다.</td></tr>`;
@@ -266,8 +316,10 @@ function render() {
 }
 
 function renderAll() {
+  renderInterpretation();
   render();
-  if (typeof renderDocs === "function") renderDocs();
+  renderDocs();
+  renderAnswer();
 }
 
 $("today").textContent = TODAY;
@@ -278,8 +330,10 @@ $("searchForm").addEventListener("submit", e => { e.preventDefault(); renderAll(
 ["from", "to", "category", "status"].forEach(id => $(id).addEventListener("change", renderAll));
 $("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderAll(); });
 // 상세 카드는 다음 단계에서 추가 예정 (행 클릭 시 data-code 사용)
-render();
 </script>
 <script src="pdf-docs.js"></script>
+<script src="question.js"></script>
+<script src="analysis.js"></script>
+<script>renderAll();</script>
 </body>
 </html>
