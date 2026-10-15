@@ -161,7 +161,22 @@ async function readPages(doc, getBytes) {
   }
 }
 
+// 판매중 → 판매중지로 바뀐 상품이 두 폴더에 모두 있으면(같은 상품·판매일자·문서유형) 판매중지 쪽만 남김
+let movedDupCount = 0;
+function dropMovedDuplicates() {
+  const stopKeys = new Set(DOCS.filter(d => d.saleFolder === "stop").map(d => [d.productKey, d.start, d.docType].join("|")));
+  const before = DOCS.length;
+  for (let i = DOCS.length - 1; i >= 0; i--) {
+    const d = DOCS[i];
+    if (d.saleFolder === "on" && stopKeys.has([d.productKey, d.start, d.docType].join("|"))) DOCS.splice(i, 1);
+  }
+  movedDupCount += before - DOCS.length;
+  return movedDupCount;
+}
+
 function finishLoading(label) {
+  const dup = dropMovedDuplicates();
+  if (dup) label += ` (판매중지로 옮겨진 중복 ${dup}개 제외)`;
   if (!SERVER_MODE) DOCS.forEach(d => { d.searchText = norm(d.path + " " + d.pages.join(" ")); });
   inferEndDates();
   $("docsBar").style.width = "100%";
@@ -174,6 +189,7 @@ function finishLoading(label) {
 }
 
 function resetDocs() {
+  movedDupCount = 0;
   DOCS.forEach(d => d.url && d.url.startsWith("blob:") && URL.revokeObjectURL(d.url));
   DOCS.length = 0;
 }
