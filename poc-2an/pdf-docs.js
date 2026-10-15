@@ -291,7 +291,12 @@ if (SERVER_MODE) {
   $("reloadDocsBtn").hidden = false;
   $("docsNote").textContent = "start.bat으로 실행 중 — 지정 폴더를 자동으로 읽어 내 PC의 검색 색인(앱 폴더 .docs-cache)에 저장합니다. " +
     "다음 실행부터는 새로 추가·수정된 파일만 읽습니다. 외부로는 아무것도 전송되지 않습니다.";
-  const run = () => loadFromServer().catch(err => { indexing = false; $("docsStatus").textContent = "자동 연결 실패: " + err.message; });
+  const run = () => loadFromServer().catch(err => {
+    indexing = false;
+    $("docsStatus").textContent = /fetch|network/i.test(err.message)
+      ? "자동 연결 실패: 앱 프로그램(start.bat 검은 창)에 연결하지 못했습니다. 검은 창이 닫혔거나 오류로 멈췄는지 확인하고, start.bat을 다시 실행하세요."
+      : "자동 연결 실패: " + err.message;
+  });
   $("reloadDocsBtn").addEventListener("click", run);
   run();
 }

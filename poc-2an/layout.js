@@ -1,6 +1,10 @@
 // 화면 배치 보조 — 상단 메뉴 화면 전환(검색 · 기초서류 연결 · 교육용 실습),
 // 상품 목록 판매상태 탭, 기초서류 연결 현황, 교육용 자료 내려받기
 
+// 앱 버전 (업데이트가 반영됐는지 기초서류 연결 화면에서 확인)
+const APP_VERSION = "2026-10-15 · 판매중/판매중지 폴더 기준 판매상태";
+$("appVersion").textContent = APP_VERSION;
+
 // ---------- 화면 전환 ----------
 const VIEWS = { home: "viewHome", connect: "viewConnect", edu: "viewEdu" };
 let curView = "home";
