@@ -47,6 +47,24 @@ function findDates(str) {
 }
 
 // 판매일자: 가장 안쪽 폴더명부터 찾고, 없으면 파일명에서 찾음. 한 이름에 날짜가 2개면 시작~종료로 봄
+// 판매여부 폴더: 경로의 폴더 이름에 "판매중지·판매종료·판매중단·중지상품"이 있으면 판매중지, "판매중·판매상품"이 있으면 판매중
+// 예) 판매중/2026/2026.04.01/(무)OO보험/…pdf, 판매중지상품/2014/…  (파일명은 보지 않음)
+function saleFolderOf(path) {
+  const folders = path.split("/").slice(0, -1).map(norm);
+  if (folders.some(f => /판매중지|판매종료|판매중단|중지상품|판매안함/.test(f))) return "stop";
+  if (folders.some(f => /판매중|판매상품|현재판매/.test(f))) return "on";
+  return "";
+}
+
+// 문서의 판매상태: 판매여부 폴더가 있으면 그 기준, 없으면 판매일자로 추정
+// (판매중 폴더라도 같은 상품의 더 최근 판매일자가 있으면 이전 판매일자는 판매종료)
+function docSaleStatus(d) {
+  if (d.saleFolder === "stop") return "판매종료";
+  if (!d.start) return d.saleFolder === "on" ? "판매중" : "미상";
+  if (d.start > TODAY) return "판매예정";
+  return !d.end || d.end >= TODAY ? "판매중" : "판매종료";
+}
+
 function saleDatesOf(path) {
   const parts = path.split("/");
   const candidates = [...parts.slice(0, -1).reverse(), parts[parts.length - 1]];
@@ -131,7 +149,7 @@ function makeDoc(path, extra) {
   const name = path.split("/").pop();
   const productName = productNameFromPath(path);
   return { path, name, docType: docTypeOf(name), productName, productKey: productKeyFrom(productName),
-           ...saleDatesOf(path), pages: [], error: "", ...extra };
+           ...saleDatesOf(path), saleFolder: saleFolderOf(path), pages: [], error: "", ...extra };
 }
 
 async function readPages(doc, getBytes) {
@@ -292,9 +310,7 @@ function docMatchesFilters(d, { from, to, category, status }) {
   // 판매기간 겹침: 판매개시일 <= To AND (종료일 빈값 OR 종료일 >= From). 판매일자를 모르면 기간 검색에서 제외
   if ((from || to) && !(d.start && (!to || d.start <= to) && (!from || !d.end || d.end >= from))) return false;
   if (category && !d.path.includes(category)) return false;
-  if (status && !(d.start && (status === "판매중"
-    ? d.start <= TODAY && (!d.end || d.end >= TODAY)
-    : d.end && d.end < TODAY))) return false;
+  if (status && docSaleStatus(d) !== status) return false;
   return true;
 }
 

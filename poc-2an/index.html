@@ -103,8 +103,6 @@
   .side .side-card:first-child { border-top: 2px solid var(--accent); }
   .side-card { border-bottom: 1px solid var(--line); padding: 14px 6px; display: grid; gap: 8px; }
   .side-card h2 { margin: 0; font-size: 17px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
-  .side-card.open h2 { color: var(--accent); font-weight: 700; }
-  .side-card.open h2::after { content: "⌄"; margin-left: auto; font-size: 16px; line-height: 0; position: relative; top: -4px; }
   .side .note { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.55; word-break: break-all; }
   .side .note b { color: #333; font-weight: 600; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #b8bcbc; flex: none; }
@@ -113,12 +111,6 @@
   .side button, .side .folder-btn { font-size: 12px; padding: 5px 10px; border-radius: 0; }
   .side .folder-btn { border: 1px solid var(--line-2); background: #fff; cursor: pointer; margin: 0; color: #333; }
   .side .folder-btn:hover { border-color: var(--accent); color: var(--accent); }
-  .sub { background: var(--sub-bg); margin: 0 -6px -14px; padding: 8px 6px; display: grid; gap: 1px; }
-  .fchip { text-align: left; border: 0; background: transparent; padding: 6px 8px; font-size: 14px; color: #444; border-radius: 0; }
-  .fchip:hover { color: var(--accent); }
-  .fchip.on { background: var(--accent); color: #fff; font-weight: 600; }
-  .fchip.on::before { content: "- "; }
-  .side .sub-note { padding: 6px 8px 2px; }
   .switch { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #333; margin: 0; cursor: pointer; }
   .switch input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
 
@@ -258,7 +250,10 @@
   table.catalog td:first-child { min-width: 190px; }
   table.catalog td:first-child a { text-decoration: none; }
   table.catalog td:first-child a:hover { color: var(--accent); text-decoration: underline; }
-  table.catalog tr.sub td { background: #fafbfb; }
+  table.catalog tr.ver-new td { border-top: 2px solid var(--line-2); }
+  table.catalog tr.ver-old td { background: #fafbfb; border-top: 1px dashed #e3e6e6; }
+  .ver-mark { color: var(--muted); font-size: 12px; padding-left: 10px; }
+  .est { margin-left: 4px; font-size: 11px; color: var(--muted); }
   .vchip { color: #444; }
   .vchip:hover { color: var(--accent); }
   .fm { color: #9aa; font-size: 14px; }
@@ -486,12 +481,13 @@
       <p class="note">공시실 서류를 아직 받지 않았다면 아래 <a href="#downloadGuide" class="jump">공시실 서류 내려받기</a>를 먼저 따라 합니다.</p>
       <h3>폴더 구성 예</h3>
 <pre class="tree">기초서류폴더
-├─ 2023.01.01            ← 판매개시일 (폴더명)
-│   ├─ (무)OO종신보험_사업방법서.pdf
-│   ├─ (무)OO종신보험_상품요약서.pdf
-│   └─ (무)OO종신보험_약관.pdf
-└─ 2025.01.01 ~ 2025.12.31   ← 판매종료일까지 쓰면 판매상태에 반영</pre>
-      <p class="note">파일명에 상품명과 문서유형(사업방법서·상품요약서·약관)이 들어 있으면 상품별로 자동으로 묶입니다. "계약자용"은 같은 상품으로 봅니다.</p>
+├─ 판매중                        ← 판매여부 폴더 (판매중 · 판매상품)
+│   └─ 2026 / 2026.04.01         ← 판매개시일 (폴더명)
+│       └─ (무)OO연금저축보험 / [보험약관] … .pdf
+└─ 판매중지                      ← (판매중지 · 판매종료 · 판매중지상품)
+    └─ 2014 / 2014.02.03 / (무)OO연금보험 / … .pdf</pre>
+      <p class="note"><b>판매상태</b>는 판매중/판매중지 폴더를 기준으로 합니다. 판매중 폴더 상품도 같은 상품의 더 최근 판매일자가 있으면 이전 판매일자는 판매종료로 봅니다. 판매여부 폴더가 없으면 판매일자로 추정하고 상품 목록에 '추정'으로 표시합니다.</p>
+      <p class="note">파일명에 상품명과 문서유형(사업방법서·상품요약서·약관)이 들어 있으면 상품별로 자동으로 묶입니다(파일명에 상품명이 없으면 상품명 폴더 이름). "계약자용"은 같은 상품으로 봅니다.</p>
     </section>
   </div>
 

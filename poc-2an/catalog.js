@@ -10,10 +10,10 @@ function kindOf(name) {
   return k ? k[0] : "기타";
 }
 
+// 판매상태: 판매중/판매중지 폴더가 있으면 그 기준(근거 "폴더"), 없으면 판매일자로 추정(근거 "추정")
 function statusOf(v) {
-  if (!v.start) return "미상";
-  if (v.start > TODAY) return "판매예정";
-  return !v.end || v.end >= TODAY ? "판매중" : "판매종료";
+  const status = docSaleStatus({ start: v.start, end: v.end, saleFolder: v.saleFolder });
+  return { status, by: v.saleFolder ? "폴더" : "추정" };
 }
 
 function buildCatalog() {
@@ -36,9 +36,10 @@ function buildCatalog() {
       types: new Set(vd.map(d => d.docType)),
       features: new Set(FEATURES.filter(f => vd.some(d => docHasFeature(d, f))).map(f => f.id)),
       errors: vd.filter(d => d.error).length,
+      saleFolder: vd.some(d => d.saleFolder === "stop") ? "stop" : vd.some(d => d.saleFolder === "on") ? "on" : "",
       pending: vd.filter(d => SERVER_MODE && !d.indexed).length,
     })).sort((a, b) => (b.start || "").localeCompare(a.start || "")); // 최신 판매일자 먼저
-    versions.forEach(v => { v.status = statusOf(v); });
+    versions.forEach(v => { const s = statusOf(v); v.status = s.status; v.statusBy = s.by; });
     const latest = versions[0];
     const name = docs[0].productName || docs[0].name;
     // 특징: 최신 판매일자에 있으면 'latest', 과거 판매일자에만 있으면 'past'
@@ -74,7 +75,7 @@ function filteredCatalog() {
 }
 
 const docMarks = types => CAT_TYPES.map(([t, s]) => `<span class="dm${types.has(t) ? " on" : ""}" title="${t}${types.has(t) ? " 있음" : " 없음"}">${s}</span>`).join("");
-const stBadge = st => `<span class="badge ${st === "판매중" ? "on" : st === "판매종료" ? "off" : "plan"}">${esc(st)}</span>`;
+const stBadge = (st, by = "") => `<span class="badge ${st === "판매중" ? "on" : st === "판매종료" ? "off" : "plan"}" title="${by === "폴더" ? "판매중/판매중지 폴더 기준" : "판매일자로 추정"}">${esc(st)}</span>${by === "추정" ? `<span class="est">추정</span>` : ""}`;
 
 function renderCatalog() {
   if (!DOCS.length) {
@@ -104,12 +105,13 @@ function renderCatalog() {
       const warn = [p.versions.some(v => v.errors) ? "본문 못 읽은 파일 있음" : "", p.versions.some(v => v.pending) ? "색인 중" : ""].filter(Boolean).join(", ");
       return `<tr>
         <td><a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(p.latest.start)}"><b>${esc(p.name)}</b></a>${warn ? `<div class="warn">${esc(warn)}</div>` : ""}</td>
-        <td>${esc(p.kind)}</td><td>${stBadge(p.status)}</td>
+        <td>${esc(p.kind)}</td><td>${stBadge(p.status, p.latest.statusBy)}</td>
         <td class="vlist">${chips}</td><td class="nowrap">${docMarks(p.latest.types)}</td>
         ${fCells(p.feat, true)}<td class="actions">${actions(p.key, p.latest.start)}</td></tr>`;
     }
-    return p.versions.map((v, i) => `<tr${i ? ' class="sub"' : ""}>
-        <td>${i ? "" : `<b>${esc(p.name)}</b>`}</td><td>${i ? "" : esc(p.kind)}</td><td>${stBadge(v.status)}</td>
+    // 판매일자별로 펼치기: 최신 판매일자 줄 아래에 이전 판매일자를 차례로, 상품이 바뀌는 곳은 굵은 선
+    return p.versions.map((v, i) => `<tr class="${i ? "ver-old" : "ver-new"}">
+        <td>${i ? `<span class="ver-mark">└ 이전 판매일자</span>` : `<a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(v.start)}"><b>${esc(p.name)}</b></a>`}</td><td>${i ? "" : esc(p.kind)}</td><td>${stBadge(v.status, v.statusBy)}</td>
         <td class="nowrap"><a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(v.start)}">${esc(v.start || "미상")}</a>
           <div class="path">~ ${esc(v.end || "")}${v.end && !v.explicitEnd ? " (추정)" : ""}</div></td>
         <td class="nowrap">${docMarks(v.types)}${v.errors ? `<div class="warn">못 읽음 ${v.errors}</div>` : ""}</td>
@@ -122,7 +124,7 @@ function renderCatalog() {
       (pending ? ` · <span class="warn">색인 중 ${pending}개는 특징이 아직 반영되지 않음</span>` : "") +
       (noDate ? ` · <span class="warn">판매일자 인식 못함 ${noDate}개</span>` : "") + `</p>
     <p class="note">● 최신 판매일자에 있음 · ○ 과거 판매일자에만 있음 · 문서: 사=사업방법서 요=상품요약서 약=약관 (진한 글자=있음) ·
-      판매상태와 종료일은 폴더 날짜로 추정 · 상품명·판매일자를 누르면 상품 분석</p>
+      판매상태는 판매중/판매중지 폴더 기준(폴더 구분이 없으면 판매일자로 추정해 '추정' 표시) · 종료일은 다음 판매일자 전날로 추정 · 상품명·판매일자를 누르면 상품 분석</p>
     <div class="table-scroll"><table class="catalog">
       <thead><tr><th>상품명</th><th>분류</th><th>상태</th><th>${expand ? "판매일자" : "판매일자(최신순)"}</th><th>문서</th>${fHead}<th></th></tr></thead>
       <tbody>${rows || `<tr><td colspan="${FEATURES.length + 6}" class="empty">조건에 맞는 상품이 없습니다.</td></tr>`}</tbody>
@@ -132,10 +134,10 @@ function renderCatalog() {
 // 엑셀(CSV): 판매일자(버전) 단위 한 줄
 function catalogCsv() {
   const q = s => `"${String(s).replace(/"/g, '""')}"`;
-  const head = ["상품명", "분류", "판매개시일", "판매종료일", "종료일 구분", "판매상태(추정)", "최신 판매일자 여부",
+  const head = ["상품명", "분류", "판매개시일", "판매종료일", "종료일 구분", "판매상태", "판매상태 근거", "최신 판매일자 여부",
     ...CAT_TYPES.map(([t]) => t), ...FEATURES.map(f => f.name), "파일 수", "본문 못 읽은 파일", "파일 경로"];
   const rows = filteredCatalog().flatMap(p => p.versions.map((v, i) => [
-    p.name, p.kind, v.start || "미상", v.end, v.end ? (v.explicitEnd ? "폴더명" : "추정") : "", v.status, i === 0 ? "Y" : "",
+    p.name, p.kind, v.start || "미상", v.end, v.end ? (v.explicitEnd ? "폴더명" : "추정") : "", v.status, v.statusBy === "폴더" ? "판매중/판매중지 폴더" : "판매일자로 추정", i === 0 ? "Y" : "",
     ...CAT_TYPES.map(([t]) => (v.types.has(t) ? "Y" : "")), ...FEATURES.map(f => (v.features.has(f.id) ? "Y" : "")),
     v.docs.length, v.errors || "", v.docs.map(d => d.path).join(" | ")]));
   return "﻿" + [head, ...rows].map(r => r.map(q).join(",")).join("\r\n");
