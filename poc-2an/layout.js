@@ -1,15 +1,17 @@
-// 화면 배치 보조 — 상단 메뉴 화면 전환(검색 · 기초서류 연결 · 교육용 실습),
+// 화면 배치 보조 — 상단 메뉴 화면 전환(검색·목록 · 상품 분석 · 상품 비교 · 기초서류 연결 · 교육용 실습),
 // 상품 목록 판매상태 탭, 기초서류 연결 현황, 교육용 자료 내려받기
 
 // 앱 버전 (업데이트가 반영됐는지 기초서류 연결 화면에서 확인)
-const APP_VERSION = "2026-10-15 · 판매중/판매중지 폴더 기준 판매상태";
+const APP_VERSION = "2026-10-16 · 분석·비교 화면 분리, 문서 링크, 검색 결과 쪽 나누기";
 $("appVersion").textContent = APP_VERSION;
 
 // ---------- 화면 전환 ----------
-const VIEWS = { home: "viewHome", connect: "viewConnect", edu: "viewEdu" };
-let curView = "home";
+const VIEWS = { home: "viewHome", analysis: "viewAnalysis", compare: "viewCompare", connect: "viewConnect", edu: "viewEdu" };
+let curView = "home", homeScroll = 0;
 
 function showView(view, target) {
+  if (curView === "home" && view !== "home") homeScroll = window.scrollY; // 검색·목록 화면 위치 기억
+  const back = view === "home" && curView !== "home" && !target;
   curView = view;
   Object.entries(VIEWS).forEach(([v, id]) => { $(id).hidden = v !== view; });
   document.querySelectorAll(".gnb a[data-view]").forEach(a =>
@@ -18,8 +20,11 @@ function showView(view, target) {
   if (view === "edu") renderEduInfo();
   const el = target && target !== "top" ? $(target) : null;
   if (el && !el.hidden) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  else window.scrollTo(0, 0);
+  else window.scrollTo(0, back ? homeScroll : 0);
 }
+
+// "← 검색·상품 목록으로": 보던 위치로 돌아감
+document.addEventListener("click", e => { if (e.target.closest("[data-back]")) showView("home"); });
 
 document.addEventListener("click", e => {
   const a = e.target.closest("a[data-view]");
@@ -34,9 +39,9 @@ const syncNav = () => navLinks.forEach(a => a.classList.toggle("off", $(a.datase
 navLinks.forEach(a => new MutationObserver(syncNav).observe($(a.dataset.needs), { attributes: true, attributeFilter: ["hidden"] }));
 syncNav();
 
-// 다른 화면에서 분석·비교를 열면 검색 화면으로 돌아와서 보여 줌
-["analysisPanel", "comparePanel"].forEach(id => new MutationObserver(() => {
-  if (!$(id).hidden && curView !== "home") showView("home", id);
+// 분석·비교를 [닫기]로 닫으면 검색·목록 화면으로 돌아감 (열 때는 showAnalysis·showCompare가 해당 화면을 엶)
+[["analysisPanel", "analysis"], ["comparePanel", "compare"]].forEach(([id, view]) => new MutationObserver(() => {
+  if ($(id).hidden && curView === view) showView("home");
 }).observe($(id), { attributes: true, attributeFilter: ["hidden"] }));
 
 // ---------- 상품 목록 판매상태 탭 → 숨은 판매상태 선택칸(catStatus)과 연동 ----------

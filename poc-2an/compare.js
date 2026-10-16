@@ -87,8 +87,8 @@ async function showCompare() {
   if (TRAY.length < 2) return;
   const panel = $("comparePanel");
   panel.hidden = false;
+  showView("compare");
   $("compareBody").innerHTML = `<p class="note">문서 본문을 불러오는 중…</p>`;
-  panel.scrollIntoView({ behavior: "smooth", block: "start" });
   const items = [...TRAY].sort((x, y) => (x.key === y.key ? (x.start || "").localeCompare(y.start || "") : 0));
   try {
     const cdocs = DOCS.filter(d => items.some(t => productKeyOf(d) === t.key && d.start === t.start));

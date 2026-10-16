@@ -74,7 +74,6 @@ function filteredCatalog() {
     (!fid || p.feat[fid]));
 }
 
-const docMarks = types => CAT_TYPES.map(([t, s]) => `<span class="dm${types.has(t) ? " on" : ""}" title="${t}${types.has(t) ? " 있음" : " 없음"}">${s}</span>`).join("");
 const stBadge = (st, by = "") => `<span class="badge ${st === "판매중" ? "on" : st === "판매종료" ? "off" : "plan"}" title="${by === "폴더" ? "판매중/판매중지 폴더 기준" : "판매일자로 추정"}">${esc(st)}</span>${by === "추정" ? `<span class="est">추정</span>` : ""}`;
 
 function renderCatalog() {
@@ -106,7 +105,7 @@ function renderCatalog() {
       return `<tr>
         <td><a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(p.latest.start)}"><b>${esc(p.name)}</b></a>${warn ? `<div class="warn">${esc(warn)}</div>` : ""}</td>
         <td>${esc(p.kind)}</td><td>${stBadge(p.status, p.latest.statusBy)}</td>
-        <td class="vlist">${chips}</td><td class="nowrap">${docMarks(p.latest.types)}</td>
+        <td class="vlist">${chips}</td><td>${docLinksHtml(p.latest.docs)}</td>
         ${fCells(p.feat, true)}<td class="actions">${actions(p.key, p.latest.start)}</td></tr>`;
     }
     // 판매일자별로 펼치기: 최신 판매일자 줄 아래에 이전 판매일자를 차례로, 상품이 바뀌는 곳은 굵은 선
@@ -114,7 +113,7 @@ function renderCatalog() {
         <td>${i ? `<span class="ver-mark">└ 이전 판매일자</span>` : `<a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(v.start)}"><b>${esc(p.name)}</b></a>`}</td><td>${i ? "" : esc(p.kind)}</td><td>${stBadge(v.status, v.statusBy)}</td>
         <td class="nowrap"><a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(v.start)}">${esc(v.start || "미상")}</a>
           <div class="path">~ ${esc(v.end || "")}${v.end && !v.explicitEnd ? " (추정)" : ""}</div></td>
-        <td class="nowrap">${docMarks(v.types)}${v.errors ? `<div class="warn">못 읽음 ${v.errors}</div>` : ""}</td>
+        <td>${docLinksHtml(v.docs)}${v.errors ? `<div class="warn">못 읽음 ${v.errors}</div>` : ""}</td>
         ${fCells(v.features, false)}<td class="actions">${actions(p.key, v.start)}</td></tr>`).join("");
   }).join("");
   const nVersions = CATALOG.reduce((s, p) => s + p.versions.length, 0);
@@ -123,10 +122,11 @@ function renderCatalog() {
       (list.length !== CATALOG.length ? ` — 조건에 맞는 상품 <b>${list.length}</b>개` : "") +
       (pending ? ` · <span class="warn">색인 중 ${pending}개는 특징이 아직 반영되지 않음</span>` : "") +
       (noDate ? ` · <span class="warn">판매일자 인식 못함 ${noDate}개</span>` : "") + `</p>
-    <p class="note">● 최신 판매일자에 있음 · ○ 과거 판매일자에만 있음 · 문서: 사=사업방법서 요=상품요약서 약=약관 (진한 글자=있음) ·
+    <p class="note"><b>기초서류 링크</b>: 누르면 원문 PDF가 열립니다. 판매일자별로 펼치지 않은 화면은 <b>최신 판매일자(최근 개정)</b>의 서류이고, 펼치면 판매일자마다 그 판의 서류가 나옵니다 ·
+      ● 최신 판매일자에 있음 · ○ 과거 판매일자에만 있음 ·
       판매상태는 판매중/판매중지 폴더 기준(폴더 구분이 없으면 판매일자로 추정해 '추정' 표시) · 종료일은 다음 판매일자 전날로 추정 · 상품명·판매일자를 누르면 상품 분석</p>
     <div class="table-scroll"><table class="catalog">
-      <thead><tr><th>상품명</th><th>분류</th><th>상태</th><th>${expand ? "판매일자" : "판매일자(최신순)"}</th><th>문서</th>${fHead}<th></th></tr></thead>
+      <thead><tr><th>상품명</th><th>분류</th><th>상태</th><th>${expand ? "판매일자" : "판매일자(최신순)"}</th><th>${expand ? "기초서류" : "기초서류 (최신 판매일자)"}</th>${fHead}<th></th></tr></thead>
       <tbody>${rows || `<tr><td colspan="${FEATURES.length + 6}" class="empty">조건에 맞는 상품이 없습니다.</td></tr>`}</tbody>
     </table></div>`;
 }

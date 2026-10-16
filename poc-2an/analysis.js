@@ -586,6 +586,7 @@ async function showAnalysis(key, start) {
   const versions = productVersions(key);
   if (!versions.includes(start)) start = versions[0];
   $("analysisPanel").hidden = false;
+  showView("analysis");
   $("analysisBody").innerHTML = `<p class="note">문서 본문을 불러오는 중…</p>`;
   try {
     const vdocs = DOCS.filter(d => productKeyOf(d) === key && d.start === start);
@@ -608,7 +609,9 @@ async function showAnalysis(key, start) {
  : `<span class="na">${esc(emptyText(r))}</span>`}</td>
       <td>${r.lines.length ? esc([...new Set(r.lines.map(l => l.ref))].join(", ")) : "-"}</td>
     </tr>`).join("");
+  const vdocs = DOCS.filter(d => productKeyOf(d) === key && d.start === start);
   $("analysisBody").innerHTML = `
+    <div class="doclinks-box"><b>기초서류 원문</b> <span class="note">(판매개시일 ${esc(start || "미상")} · 누르면 PDF가 열림)</span>${docLinksHtml(vdocs, "doclinks-row")}</div>
     <h3>한눈에 보기</h3>
     ${R.overview.map(t => `<p class="line">${esc(t)}</p>`).join("")}
     <h3>핵심 특징 표</h3>
@@ -618,7 +621,7 @@ async function showAnalysis(key, start) {
     <h3>확인 필요 항목</h3>
     ${R.checks.length ? `<ul>${R.checks.map(c => `<li class="${c.startsWith("[확인 필요]") ? "check" : c.startsWith("[확신 낮음]") ? "low" : ""}">${esc(c)}</li>`).join("")}</ul>` : `<p class="na">없음</p>`}
     <p class="note">※ 규칙 기반 자동 추출입니다. [확신 낮음]은 항목명·목차·지급기준표가 아니라 본문 단어나 문장 검색으로 판정한 항목입니다. 항목 분류가 틀릴 수 있으니 근거 페이지를 눌러 원문을 확인하세요. 담보·형별 구분은 원문 줄에 적힌 그대로 보여줍니다.</p>`;
-  $("analysisPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+  window.scrollTo(0, 0);
 }
 
 // 결과를 마크다운 표로 복사 (보고서·메일 붙여넣기용)

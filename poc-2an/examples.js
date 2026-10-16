@@ -14,11 +14,11 @@ const EXAMPLES = {
       showView("home", "catalogPanel");
     } },
   "analysis": { label: "상품 분석 24개 항목", desc: "'두단계종신보험' 2025판: 원문 인용 · 근거 쪽수 · 지급기준표 그림",
-    run: async () => { await openAnalysis("두단계", "2025-01-01"); showView("home", "analysisPanel"); } },
+    run: async () => { await openAnalysis("두단계", "2025-01-01"); showView("analysis"); } },
   "paytable": { label: "지급기준표 크게 보기", desc: "약관 별표 보험금 지급기준표를 원문 모양 그대로",
     run: async () => {
       await openAnalysis("두단계", "2025-01-01");
-      showView("home", "analysisPanel");
+      showView("analysis");
       const b = [...document.querySelectorAll("#analysisBody tr")].find(tr => /보험금 지급사유/.test(tr.cells[0] && tr.cells[0].textContent));
       const btn = b && b.querySelector("[data-imgset]");
       if (btn) btn.click();
@@ -28,14 +28,14 @@ const EXAMPLES = {
       await openAnalysis("두단계", "2025-01-01");
       $("prevVersionBtn").click();
       await until(() => !$("comparePanel").hidden && $("compareBody").querySelector("table"));
-      showView("home", "comparePanel");
+      showView("compare");
     } },
   "compare": { label: "상품 비교 (3개)", desc: "든든·두갈래·암케어를 24개 항목으로 나란히",
     run: async () => {
       TRAY.length = 0;
       [["든든", "2023-01-01"], ["두갈래", "2024-03-01"], ["암케어", "2023-04-01"]].forEach(([p, st]) => addToCompare(sampleKey(p), st));
       await showCompare();
-      showView("home", "comparePanel");
+      showView("compare");
     } },
   "db-detail": { label: "포트폴리오·주요사항", desc: "가상 상품 DB '든든종신보험(2차)': 요약·담보·월별 보유계약·심의 문서",
     run: async () => {
@@ -43,7 +43,7 @@ const EXAMPLES = {
       showView("edu");
       renderDbDetail("P002");
     } },
-  "selfcheck": { label: "자동 검증 13개", desc: "기획서 요구사항별 기대값·실제값 (샘플을 읽으면 자동 실행)",
+  "selfcheck": { label: "자동 검증 14개", desc: "기획서 요구사항별 기대값·실제값 (샘플을 읽으면 자동 실행)",
     run: async () => { showView("edu", "selfCheck"); if (!/통과/.test($("checkSummary").textContent)) runSelfCheck(); } },
 };
 

@@ -65,6 +65,21 @@
   .tries { display: flex; flex-wrap: wrap; gap: 8px; }
   .tries button { padding: 9px 14px; white-space: normal; text-align: left; }
   .ok-text { color: var(--accent); }
+  .back-btn { margin-bottom: 18px; }
+  .docs-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .docs-head h2 { margin: 0; }
+  .docs-head select { width: auto; }
+  .pager { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; align-items: center; margin-top: 14px; }
+  .pager button { min-width: 34px; padding: 4px 8px; }
+  .pager button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .pager .pinfo { margin-left: 10px; font-size: 12px; color: var(--muted); }
+  .doclinks { display: grid; gap: 2px; white-space: nowrap; font-size: 13px; }
+  .doclinks a { color: var(--accent-2); }
+  .doclinks .miss { color: #b8bcbc; }
+  .doclinks-row { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 14px; }
+  .doclinks-row a { color: var(--accent-2); font-weight: 600; }
+  .doclinks-row .miss { color: #b8bcbc; }
+  .doclinks-box { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 10px 14px; background: var(--label-bg); border: 1px solid var(--line); margin-bottom: 6px; }
   .lowconf { display: inline-block; margin-left: 6px; padding: 0 6px; font-size: 11px; font-weight: 600; color: var(--gold); border: 1px solid currentColor; white-space: nowrap; vertical-align: 1px; }
   li.low { color: #8a5a12; }
   .example-note { margin: 12px 0 0; padding: 8px 12px; background: var(--accent-weak); border-left: 3px solid var(--accent); font-size: 13px; }
@@ -233,7 +248,7 @@
   .catalog-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
   .catalog-head h2 { margin: 0; }
   .catalog-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
-  .tabs { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 22px; }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); margin-bottom: 22px; }
   .tabs button { border: 1px solid var(--line-2); border-left-width: 0; background: var(--sub-bg); padding: 8px 8px; font-size: 14px; color: #444; }
   .tabs button:first-child { border-left-width: 1px; }
   .tabs button.on { background: #fff; border-top: 2px solid var(--accent); border-bottom-color: #fff; color: var(--accent); font-weight: 700; }
@@ -258,8 +273,6 @@
   .vchip:hover { color: var(--accent); }
   .fm { color: #9aa; font-size: 14px; }
   .fm.on { color: var(--accent); }
-  .dm { display: inline-block; width: 18px; text-align: center; font-size: 11px; color: #c4cad3; border: 1px solid var(--line); margin-right: 2px; }
-  .dm.on { color: var(--accent-2); border-color: var(--accent); font-weight: 700; }
   .vlist { max-width: 220px; }
   .vchip { display: inline-block; font-size: 12px; margin: 0 4px 2px 0; }
   .nowrap { white-space: nowrap; }
@@ -321,8 +334,8 @@
       <nav class="gnb" aria-label="메뉴">
         <a href="#" data-view="home" data-target="searchPanel">기초서류 검색</a>
         <a href="#" data-view="home" data-target="catalogPanel">상품 목록</a>
-        <a href="#" data-view="home" data-target="analysisPanel" data-needs="analysisPanel">상품 분석</a>
-        <a href="#" data-view="home" data-target="comparePanel" data-needs="comparePanel">상품 비교</a>
+        <a href="#" data-view="analysis" data-needs="analysisPanel">상품 분석</a>
+        <a href="#" data-view="compare" data-needs="comparePanel">상품 비교</a>
         <a href="#" data-view="connect"><span class="dot" id="docsDot"></span>기초서류 연결</a>
         <a href="#" data-view="edu">교육용 실습</a>
       </nav>
@@ -348,7 +361,7 @@
           <div class="sfield"><input id="keyword" placeholder="예) 유지보너스 / 제1납입기간과 제2납입기간이 구분된 종신보험이 뭐였지?" autocomplete="off" /></div>
         </div>
         <div class="srow">
-          <div class="slabel">판매기간 · 분류</div>
+          <div class="slabel">판매기간 · 조건</div>
           <div class="sfield sfield-row">
             <div class="period">
               <input type="date" id="from" aria-label="판매기간 From" />
@@ -360,6 +373,13 @@
               <option value="">판매상태 전체</option>
               <option value="판매중">판매중</option>
               <option value="판매종료">판매종료</option>
+            </select>
+            <select id="docType" aria-label="문서유형">
+              <option value="">문서유형 전체</option>
+              <option>사업방법서</option>
+              <option>상품요약서</option>
+              <option>약관</option>
+              <option value="기타">기타 문서</option>
             </select>
           </div>
         </div>
@@ -380,7 +400,11 @@
 
   <!-- 기초서류 PDF 검색 결과 -->
   <section class="panel" id="docsPanel" hidden>
-    <h2>기초서류 검색 결과</h2>
+    <div class="docs-head">
+      <h2>기초서류 검색 결과</h2>
+      <label class="inline">한 페이지에
+        <select id="docsPageSize" aria-label="한 페이지 결과 수"><option>10</option><option selected>20</option><option>30</option></select> 건</label>
+    </div>
     <p class="summary" id="docsSummary"></p>
     <div class="table-scroll"><table class="docs">
       <thead>
@@ -388,9 +412,41 @@
       </thead>
       <tbody id="docsResults"></tbody>
     </table></div>
+    <nav class="pager" id="docsPager" aria-label="검색 결과 페이지"></nav>
   </section>
 
 
+  <!-- 상품 목록 (메인) -->
+  <section class="panel catalog-panel" id="catalogPanel">
+    <div class="catalog-head">
+      <div>
+        <h2>상품 목록</h2>
+        <p>상품명·판매일자를 누르면 상품 분석 · [비교 담기]로 상품·개정 비교</p>
+      </div>
+      <button type="button" id="csvCatalogBtn" class="mini">엑셀 저장(CSV)</button>
+    </div>
+    <div class="tabs" id="catTabs" role="tablist">
+      <button type="button" data-st="" class="on">전체</button>
+      <button type="button" data-st="판매중">판매중</button>
+      <button type="button" data-st="판매종료">판매종료</button>
+    </div>
+    <div class="cat-filters">
+      <input id="catSearch" placeholder="상품명 검색" autocomplete="off" />
+      <select id="catKind"><option value="">분류 전체</option></select>
+      <select id="catStatus" aria-label="판매상태">
+        <option value="">상태 전체</option><option>판매중</option><option>판매종료</option><option>판매예정</option><option>미상</option>
+      </select>
+      <select id="catFeature"><option value="">특징 전체</option></select>
+      <label class="inline"><input type="checkbox" id="catExpand" /> 판매일자별로 펼치기</label>
+    </div>
+    <div id="catalogBody"></div>
+  </section>
+</main>
+</div>
+
+<!-- 상품 분석 화면 -->
+<div class="wrap page" id="viewAnalysis" data-page="analysis" hidden>
+  <button type="button" class="back-btn" data-back>← 검색·상품 목록으로</button>
   <!-- 상품 분석: 핵심 특징 표 -->
   <section class="panel" id="analysisPanel" hidden>
     <div class="analysis-head">
@@ -406,7 +462,11 @@
     </div>
     <div id="analysisBody"></div>
   </section>
+</div>
 
+<!-- 상품 비교 화면 -->
+<div class="wrap page" id="viewCompare" data-page="compare" hidden>
+  <button type="button" class="back-btn" data-back>← 검색·상품 목록으로</button>
   <!-- 상품 비교 · 개정 전후 비교 -->
   <section class="panel" id="comparePanel" hidden>
     <div class="analysis-head">
@@ -420,34 +480,6 @@
     </div>
     <div id="compareBody"></div>
   </section>
-
-  <!-- 상품 목록 (메인) -->
-  <section class="panel catalog-panel" id="catalogPanel">
-    <div class="catalog-head">
-      <div>
-        <h2>상품 목록</h2>
-        <p>상품명·판매일자를 누르면 상품 분석 · [비교 담기]로 상품·개정 비교</p>
-      </div>
-      <button type="button" id="csvCatalogBtn" class="mini">엑셀 저장(CSV)</button>
-    </div>
-    <div class="tabs" id="catTabs" role="tablist">
-      <button type="button" data-st="" class="on">전체</button>
-      <button type="button" data-st="판매중">판매중</button>
-      <button type="button" data-st="판매종료">판매종료</button>
-      <button type="button" data-st="판매예정">판매예정</button>
-    </div>
-    <div class="cat-filters">
-      <input id="catSearch" placeholder="상품명 검색" autocomplete="off" />
-      <select id="catKind"><option value="">분류 전체</option></select>
-      <select id="catStatus" aria-label="판매상태">
-        <option value="">상태 전체</option><option>판매중</option><option>판매종료</option><option>판매예정</option><option>미상</option>
-      </select>
-      <select id="catFeature"><option value="">특징 전체</option></select>
-      <label class="inline"><input type="checkbox" id="catExpand" /> 판매일자별로 펼치기</label>
-    </div>
-    <div id="catalogBody"></div>
-  </section>
-</main>
 </div>
 
 <!-- 기초서류 연결 화면 -->
@@ -766,7 +798,7 @@ function highlight(text, terms) {
 
 function readForm() {
   return { keyword: $("keyword").value, from: $("from").value, to: $("to").value,
-           category: $("category").value, status: $("status").value };
+           category: $("category").value, status: $("status").value, docType: $("docType").value };
 }
 
 function render() {

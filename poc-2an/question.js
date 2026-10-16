@@ -94,7 +94,7 @@ function currentQuery() {
   return {
     mode: "question", Q,
     form: { keyword: "", from: Q.from || f.from, to: Q.to || f.to,
-            category: Q.category || f.category, status: Q.status || f.status },
+            category: Q.category || f.category, status: Q.status || f.status, docType: f.docType },
   };
 }
 

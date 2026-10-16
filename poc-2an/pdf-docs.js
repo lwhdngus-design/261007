@@ -327,7 +327,9 @@ if (DEMO_MODE) {
 
 // ---------- 검색 ----------
 // 판매기간·분류·판매상태 조건 (키워드 검색과 질문 검색이 함께 사용)
-function docMatchesFilters(d, { from, to, category, status }) {
+const MAIN_DOC_TYPES = ["사업방법서", "상품요약서", "약관"];
+function docMatchesFilters(d, { from, to, category, status, docType }) {
+  if (docType && (docType === "기타" ? MAIN_DOC_TYPES.includes(d.docType) : d.docType !== docType)) return false;
   // 판매기간 겹침: 판매개시일 <= To AND (종료일 빈값 OR 종료일 >= From). 판매일자를 모르면 기간 검색에서 제외
   if ((from || to) && !(d.start && (!to || d.start <= to) && (!from || !d.end || d.end >= from))) return false;
   if (category && !d.path.includes(category)) return false;
@@ -392,35 +394,45 @@ async function snippetsFor(docs, terms) {
   return out;
 }
 
-const MAX_ROWS = 200;
 let docsRenderSeq = 0;
+let docsPage = 1;
+const docsPageSize = () => +$("docsPageSize").value || 20;
 
-async function renderDocs() {
+// keepPage: 쪽 이동·한 페이지 건수 변경일 때 true (새 검색이면 1쪽부터)
+async function renderDocs(keepPage = false) {
   const seq = ++docsRenderSeq; // 빠르게 다시 검색하면 이전 결과는 버림
+  if (!keepPage) docsPage = 1;
   const cur = currentQuery();
   // 질문(특징) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
   // 검색어·조건이 하나도 없으면 문서 목록 대신 상품 목록이 메인
-  const f = cur.form, idle = !f.keyword.trim() && !f.from && !f.to && !f.category && !f.status;
+  const f = cur.form, idle = !f.keyword.trim() && !f.from && !f.to && !f.category && !f.status && !f.docType;
   if (!DOCS.length || cur.mode === "question" || idle) { $("docsPanel").hidden = true; return; }
   $("docsPanel").hidden = false;
-  let rows, snips;
+  let rows, snips, pageRows;
+  const size = docsPageSize();
   try {
     rows = await searchDocs(cur.form);
-    snips = await snippetsFor(rows.slice(0, MAX_ROWS).map(r => r.doc), rows.length ? rows[0].terms : []);
+    const pages = Math.max(1, Math.ceil(rows.length / size));
+    docsPage = Math.min(Math.max(1, docsPage), pages);
+    pageRows = rows.slice((docsPage - 1) * size, docsPage * size);
+    // 일치 문장은 지금 쪽에 보이는 문서만 가져옴
+    snips = await snippetsFor(pageRows.map(r => r.doc), rows.length ? rows[0].terms : []);
   } catch (e) {
     if (seq === docsRenderSeq) $("docsSummary").textContent = "검색 실패: " + e.message;
     return;
   }
   if (seq !== docsRenderSeq) return;
   const notIndexed = DOCS.filter(d => SERVER_MODE && !d.indexed).length;
+  const from = rows.length ? (docsPage - 1) * size + 1 : 0, to = (docsPage - 1) * size + pageRows.length;
   $("docsSummary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 불러온 PDF ${DOCS.length}건` +
-    (rows.length > MAX_ROWS ? ` (상위 ${MAX_ROWS}건만 표시)` : "") +
+    (rows.length > size ? ` · ${from}~${to}번째 표시` : "") +
     (notIndexed && cur.form.keyword.trim() ? ` · 색인 중인 ${notIndexed}건은 아직 검색되지 않음` : "");
+  renderPager(rows.length, size);
   if (!rows.length) {
     $("docsResults").innerHTML = `<tr><td colspan="5" class="empty">조건에 맞는 문서가 없습니다.</td></tr>`;
     return;
   }
-  $("docsResults").innerHTML = rows.slice(0, MAX_ROWS).map(({ doc: d, terms }) => {
+  $("docsResults").innerHTML = pageRows.map(({ doc: d, terms }) => {
     let snipHtml = "", firstPage = 1;
     if (terms.length) {
       const list = snips.get(d) || [];
@@ -439,6 +451,38 @@ async function renderDocs() {
         <button type="button" data-analyze="${esc(productKeyOf(d))}" data-start="${esc(d.start)}">분석</button></td>
     </tr>`;
   }).join("");
+}
+
+// 쪽 번호: « ‹ 1 2 3 … › » (현재 쪽 앞뒤로 최대 10개)
+function renderPager(total, size) {
+  const pages = Math.ceil(total / size);
+  if (pages <= 1) { $("docsPager").innerHTML = ""; return; }
+  const startP = Math.max(1, Math.min(docsPage - 4, pages - 9)), endP = Math.min(pages, startP + 9);
+  const btn = (p, label, title) => `<button type="button" data-docs-page="${p}"${p === docsPage && label === String(p) ? ' class="on" aria-current="page"' : ""}${p < 1 || p > pages ? " disabled" : ""} title="${title || p + "쪽"}">${label}</button>`;
+  let html = btn(1, "«", "처음") + btn(docsPage - 1, "‹", "이전 쪽");
+  for (let p = startP; p <= endP; p++) html += btn(p, String(p));
+  html += btn(docsPage + 1, "›", "다음 쪽") + btn(pages, "»", "마지막") + `<span class="pinfo">${docsPage} / ${pages}쪽</span>`;
+  $("docsPager").innerHTML = html;
+}
+$("docsPager").addEventListener("click", e => {
+  const b = e.target.closest("button[data-docs-page]");
+  if (!b || b.disabled) return;
+  docsPage = +b.dataset.docsPage;
+  renderDocs(true).then(() => $("docsPanel").scrollIntoView({ block: "start" }));
+});
+$("docsPageSize").addEventListener("change", () => { docsPage = 1; renderDocs(true); });
+
+// 상품·판매일자의 기초서류 원문 링크 (사업방법서 / 상품요약서 / 약관 순, 같은 유형이 여럿이면 번호)
+function docLinksHtml(docs, cls = "doclinks") {
+  const parts = [];
+  for (const t of MAIN_DOC_TYPES) {
+    const list = docs.filter(d => d.docType === t);
+    if (!list.length) { parts.push(`<span class="miss">${t} 없음</span>`); continue; }
+    parts.push(list.map((d, i) => `<a href="#" data-open="${DOCS.indexOf(d)}" data-page="1" title="${esc(d.path)}">${t}${list.length > 1 ? ` (${i + 1})` : ""}</a>`).join(" "));
+  }
+  docs.filter(d => !MAIN_DOC_TYPES.includes(d.docType))
+    .forEach(d => parts.push(`<a href="#" data-open="${DOCS.indexOf(d)}" data-page="1" title="${esc(d.path)}">${esc(d.docType === "기타" ? d.name : d.docType)}</a>`));
+  return `<span class="${cls}">${parts.join("")}</span>`;
 }
 
 // 같은 상품으로 묶는 키 (파일명에서 상품명을 못 뽑으면 파일명 전체)
