@@ -7,6 +7,8 @@ const EXAMPLES = {
     run: async () => { searchFor("제1납입기간과 제2납입기간이 구분된 종신보험이 뭐였지?"); showView("home", "answerPanel"); } },
   "q-sentence": { label: "문장 질문 검색", desc: "'사망 시 이미 납입한 보험료에서 인출금액을 차감한 금액을 지급하는 상품' → 핵심어가 한 문장에 모인 원문(특징 사전 없이)",
     run: async () => { searchFor("사망 시 이미 납입한 보험료에서 인출금액을 차감한 금액을 지급하는 상품이 뭐가 있어?"); showView("home", "answerPanel"); } },
+  "ai": { label: "AI 질문", desc: "'2023년 이후 나온 종신보험 목록 알려줘' → 해석한 조건 · 앱이 센 개수 · 근거 표 (로컬 AI가 없으면 규칙 해석)",
+    run: async () => { showView("ai"); await askAi("2023년 이후 나온 종신보험 목록 알려줘"); } },
   "kw-premium": { label: "키워드 검색 결과", desc: "'제2영업보험료' → 일치한 문서·문장·쪽수",
     run: async () => { searchFor("제2영업보험료"); showView("home", "docsPanel"); } },
   "catalog": { label: "판매시기별 상품 목록", desc: "상품별 판매일자(개정)·문서·특징 표, 판매일자별로 펼친 상태",

@@ -8,6 +8,7 @@
 # - PDF 글자 추출은 브라우저(pdf.js)가 하고, 결과를 .docs-cache/index.db 에 저장합니다.
 #   다음 실행부터는 새로 추가·수정된 파일만 다시 읽습니다. (.docs-cache 폴더를 지우면 초기화)
 # - 특징 사전(dummy-data/features.csv)이 바뀌면 저장된 글자로 특징 태그를 자동으로 다시 계산합니다.
+# - AI 질문: 내 PC의 로컬 AI(Ollama, 127.0.0.1:11434)에만 연결합니다. 없으면 앱이 규칙 해석으로 답합니다.
 import argparse
 import csv
 import hashlib
@@ -19,7 +20,9 @@ import socketserver
 import sqlite3
 import sys
 import threading
+import urllib.error
 import urllib.parse
+import urllib.request
 import shutil
 import subprocess
 import webbrowser
@@ -33,6 +36,10 @@ DB_PATH = CACHE_DIR / "index.db"
 FEATURES_CSV = APP_DIR / "dummy-data" / "features.csv"
 MAX_POST = 300 * 1024 * 1024
 WRITE_LOCK = threading.Lock()
+# 로컬 AI(Ollama) — 이 PC 안의 주소만 사용 (프록시 설정도 무시해 외부로 나가지 않음)
+OLLAMA_URL = "http://127.0.0.1:11434"
+AI_RECOMMENDED = ["qwen2.5:7b", "qwen2.5:14b", "qwen2.5:3b"]
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def norm(s):
@@ -350,6 +357,62 @@ def ask(groups, need, ids, per_doc=2):
     return out
 
 
+def near_words(ids, words, after=80, per_doc=6):
+    """문서마다 단어가 처음 나오는 곳 뒤쪽 원문(공백 제거) — AI 질문의 값 읽기(예정이율 등)"""
+    words = [norm(w) for w in words if norm(w)]
+    if not words or not ids:
+        return []
+    cond = " OR ".join("instr(t, ?) > 0" for _ in words)
+    sql = (f"WITH n AS MATERIALIZED (SELECT doc_id, page_no, {SQL_NORM} AS t FROM pages "
+           f"WHERE doc_id IN (SELECT value FROM json_each(?))) "
+           f"SELECT doc_id, page_no, t FROM n WHERE {cond} ORDER BY doc_id, page_no")
+    out, count = [], {}
+    with connect() as c:
+        for doc_id, page_no, t in c.execute(sql, [json.dumps([int(i) for i in ids])] + words):
+            if count.get(doc_id, 0) >= per_doc:
+                continue
+            for w in words:
+                k = t.find(w)
+                if k != -1:
+                    out.append({"id": doc_id, "page": page_no, "text": t[k:k + after]})
+                    count[doc_id] = count.get(doc_id, 0) + 1
+                    break
+    return out
+
+
+# ---------- 로컬 AI (Ollama) ----------
+def ollama(path, body=None, timeout=5):
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(OLLAMA_URL + path, data=data, headers={"Content-Type": "application/json"})
+    with NO_PROXY.open(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def ai_status():
+    try:
+        models = [m["name"] for m in ollama("/api/tags").get("models", [])]
+    except (OSError, ValueError, urllib.error.URLError) as e:
+        return {"ok": False, "models": [], "error": f"로컬 AI 연결 안 됨 ({e.__class__.__name__})"}
+    rec = next((m for r in AI_RECOMMENDED for m in models if m == r or m.startswith(r + "-")), models[0] if models else "")
+    return {"ok": bool(models), "models": models, "recommended": rec}
+
+
+def ai_chat(body):
+    req = {"model": str(body.get("model") or ""), "messages": body.get("messages") or [], "stream": False,
+           "keep_alive": "15m", "options": body.get("options") or {}}
+    if body.get("format"):
+        req["format"] = body["format"]
+    try:
+        r = ollama("/api/chat", req, timeout=600)
+    except urllib.error.HTTPError as e:
+        if req.get("format") and req["format"] != "json":  # 오래된 Ollama: JSON 형식 지정(스키마) 미지원 → 일반 JSON 모드
+            req["format"] = "json"
+            r = ollama("/api/chat", req, timeout=600)
+        else:
+            raise ValueError(f"로컬 AI 오류 {e.code}: {e.read().decode('utf-8', 'replace')[:200]}")
+    return {"content": (r.get("message") or {}).get("content", "")}
+
+
 def doc_pages(doc_id):
     with connect() as c:
         return [t for (t,) in c.execute("SELECT text FROM pages WHERE doc_id=? ORDER BY page_no", (doc_id,))]
@@ -397,6 +460,8 @@ def make_handler(root):
             if url.path == "/api/docs":
                 ensure_tags()
                 return self.send_json(list_docs(root))
+            if url.path == "/api/ai/status":
+                return self.send_json(ai_status())
             if url.path == "/api/pages":
                 return self.send_json({"pages": doc_pages(int(qs.get("id", ["0"])[0]))})
             if url.path.startswith("/docs/"):
@@ -426,10 +491,14 @@ def make_handler(root):
                     return self.send_json({"ids": search_ids(body.get("terms", []))})
                 if path == "/api/ask":
                     return self.send_json({"hits": ask(body.get("groups", []), body.get("need", 1), body.get("ids", []))})
+                if path == "/api/near":
+                    return self.send_json({"hits": near_words(body.get("ids", []), body.get("words", []))})
+                if path == "/api/ai/chat":
+                    return self.send_json(ai_chat(body))
                 if path == "/api/snippets":
                     res = snippets_for([int(i) for i in body.get("ids", [])][:300], body.get("terms", []))
                     return self.send_json({"snippets": {str(k): v for k, v in res.items()}})
-            except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as e:
+            except (ValueError, KeyError, TypeError, OSError, sqlite3.Error, urllib.error.URLError) as e:
                 return self.send_json({"error": str(e)}, 400)
             return self.send_error(404)
 
@@ -505,6 +574,9 @@ def main():
     url = f"http://127.0.0.1:{server.server_address[1]}/index.html"
     print(f"기초서류 폴더: {root}")
     print(f"앱 주소: {url}")
+    st = ai_status()
+    print(f"로컬 AI: 연결됨 (모델 {', '.join(st['models'])})" if st["ok"] else
+          "로컬 AI: 없음 → AI 질문은 규칙 해석으로 답합니다 (설치: ai-setup.bat)")
     print("이 창을 닫으면 앱이 종료됩니다. (폴더 변경: python serve.py --folder \"경로\")")
     if not args.no_browser:
         threading.Timer(0.8, lambda: print(f"{open_browser(url, args.browser)}로 열었습니다.")).start()

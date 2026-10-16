@@ -1,12 +1,12 @@
-// 화면 배치 보조 — 상단 메뉴 화면 전환(검색·목록 · 상품 분석 · 상품 비교 · 기초서류 연결 · 교육용 실습),
+// 화면 배치 보조 — 상단 메뉴 화면 전환(검색·목록 · AI 질문 · 상품 분석 · 상품 비교 · 기초서류 연결 · 교육용 실습),
 // 상품 목록 판매상태 탭, 기초서류 연결 현황, 교육용 자료 내려받기
 
 // 앱 버전 (업데이트가 반영됐는지 기초서류 연결 화면에서 확인)
-const APP_VERSION = "2026-10-16 · 문장 질문 검색(특징 사전 없이 질문 문장 그대로)";
+const APP_VERSION = "2026-10-16 · AI 질문(로컬 AI 챗봇)";
 $("appVersion").textContent = APP_VERSION;
 
 // ---------- 화면 전환 ----------
-const VIEWS = { home: "viewHome", analysis: "viewAnalysis", compare: "viewCompare", connect: "viewConnect", edu: "viewEdu" };
+const VIEWS = { home: "viewHome", ai: "viewAi", analysis: "viewAnalysis", compare: "viewCompare", connect: "viewConnect", edu: "viewEdu" };
 let curView = "home", homeScroll = 0;
 
 function showView(view, target) {

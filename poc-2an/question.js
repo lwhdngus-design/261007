@@ -28,15 +28,17 @@ const STOP_WORDS = ["보험료납입기간", "납입기간", "보험료", "나�
 const IGNORED = new Set(); // 사용자가 × 로 끈 해석 (질문이 바뀌면 초기화)
 let lastQuestion = "";
 
-function interpretQuestion(text) {
+// pure: 검색창과 관계없이 해석만 (AI 질문 화면용 — 검색창의 × 상태를 건드리지 않음)
+function interpretQuestion(text, pure = false) {
   const raw = norm(text);
-  if (raw !== lastQuestion) { IGNORED.clear(); lastQuestion = raw; }
+  const IGN = pure ? new Set() : IGNORED;
+  if (!pure && raw !== lastQuestion) { IGNORED.clear(); lastQuestion = raw; }
   const Q = { raw, features: [], category: "", status: "", from: "", to: "", chips: [], leftover: [] };
   if (!raw) return Q;
   const taken = [];
   const free = (s, e) => !taken.some(([a, b]) => s < b && e > a);
   const chip = (key, kind, label) => {
-    const ignored = IGNORED.has(key);
+    const ignored = IGN.has(key);
     if (!Q.chips.some(c => c.key === key)) Q.chips.push({ key, kind, label, ignored });
     return !ignored;
   };
@@ -87,7 +89,7 @@ function interpretQuestion(text) {
 
   // 6) 문장 질문 검색용 핵심어 (특징 사전과 관계없이 질문 문장 그대로)
   const all = questionTerms(text);
-  Q.termChips = all.map(t => ({ key: "t:" + t, term: t, ignored: IGNORED.has("t:" + t) }));
+  Q.termChips = all.map(t => ({ key: "t:" + t, term: t, ignored: IGN.has("t:" + t) }));
   Q.terms = Q.termChips.filter(c => !c.ignored).map(c => c.term);
   Q.sentence = all.length >= 2 && (QUESTION_CUE.test(raw) || all.length >= 4);
   return Q;

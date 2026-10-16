@@ -204,6 +204,29 @@
   .chip b { color: var(--accent); font-weight: 600; }
   .chip.ignored { background: var(--off-bg); border-color: var(--line); color: var(--muted); text-decoration: line-through; }
   .chip button { border: 0; background: transparent; padding: 0 6px; color: var(--muted); font-size: 13px; }
+  .ai-status { padding: 10px 14px; border: 1px solid var(--line); margin-bottom: 16px; font-size: 14px; }
+  .ai-status.on { border-color: #b7dcd9; background: var(--accent-weak); }
+  .ai-status.off { background: #fafafa; }
+  .ai-status select { margin: 0 4px; width: auto; display: inline-block; }
+  .ai-status input[type=checkbox] { width: auto; vertical-align: middle; margin: 0 4px 0 0; }
+  .ai-form button { width: auto; white-space: nowrap; }
+  .ai-opt { margin-left: 12px; font-size: 13px; color: var(--muted); }
+  .ai-log { display: flex; flex-direction: column; gap: 18px; margin-bottom: 16px; }
+  .ai-q { align-self: flex-end; max-width: 80%; margin-left: auto; background: var(--accent); color: #fff; padding: 9px 14px; border-radius: 14px 14px 2px 14px; width: fit-content; }
+  .ai-a { border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 12px 16px; margin-top: 8px; }
+  .ai-answer { font-size: 15px; line-height: 1.7; margin-bottom: 6px; }
+  .ai-meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .ai-cond { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .ai-cond .chip { padding-right: 10px; }
+  .ai-table td, .ai-table th { font-size: 13px; }
+  .ai-form { display: flex; gap: 8px; }
+  .ai-form input { flex: 1; min-width: 0; }
+  .ai-examples { margin: 10px 0 18px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .ai-examples button.mini { margin-left: 0; }
+  .ai-setup { border: 1px solid var(--line); padding: 10px 14px; font-size: 14px; }
+  .ai-setup summary { cursor: pointer; font-weight: 600; }
+  .ai-setup li { margin: 6px 0; line-height: 1.6; }
+  button.linkbtn { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; text-align: left; font: inherit; }
   .sentbox { margin-bottom: 14px; }
   .sentbox h3 { font-size: 15px; margin: 4px 0 6px; }
   .pcard { border: 1px solid var(--line); border-top: 2px solid var(--accent); padding: 14px 16px; margin-bottom: 12px; }
@@ -336,6 +359,7 @@
       <nav class="gnb" aria-label="메뉴">
         <a href="#" data-view="home" data-target="searchPanel">기초서류 검색</a>
         <a href="#" data-view="home" data-target="catalogPanel">상품 목록</a>
+        <a href="#" data-view="ai">AI 질문</a>
         <a href="#" data-view="analysis" data-needs="analysisPanel">상품 분석</a>
         <a href="#" data-view="compare" data-needs="comparePanel">상품 비교</a>
         <a href="#" data-view="connect"><span class="dot" id="docsDot"></span>기초서류 연결</a>
@@ -486,6 +510,32 @@
 </div>
 
 <!-- 기초서류 연결 화면 -->
+<div class="wrap page" id="viewAi" data-page="ai" hidden>
+  <h1 class="page-title">AI 질문</h1>
+  <p class="page-desc">연결된 기초서류에 대해 자유롭게 물어보세요. 질문 해석과 답변 문장은 <b>내 PC의 로컬 AI</b>가 하고,
+    개수·평균 같은 <b>숫자는 앱이 직접 계산</b>합니다. 외부로 아무것도 보내지 않습니다.</p>
+  <div class="ai-status" id="aiStatus"></div>
+  <div class="ai-log" id="aiLog"></div>
+  <form class="ai-form" id="aiForm" autocomplete="off">
+    <input id="aiInput" placeholder="예) 종신보험 중 판매중지된 상품은 몇 개야?" />
+    <button type="submit" class="primary" id="aiSend">질문</button>
+    <button type="button" id="aiClear">대화 지우기</button>
+  </form>
+  <div class="ai-examples" id="aiExamples"></div>
+  <details class="ai-setup" id="aiSetup">
+    <summary>로컬 AI 설치 방법 (처음 한 번 · 회사 IT 승인 후)</summary>
+    <ol>
+      <li><b>Ollama 설치</b>: ollama.com 에서 Windows용 설치 파일을 받아 설치합니다. 설치 후 PC에서 자동 실행되며 이 PC(127.0.0.1)에서만 접속됩니다.</li>
+      <li><b>모델 받기</b>: 앱 폴더의 <code>ai-setup.bat</code>을 실행하면 추천 모델(<code>qwen2.5:7b</code>, 약 4.7GB)을 받습니다. 인터넷은 이때 한 번만 필요합니다.
+        회사망에서 받을 수 없으면 다른 PC에서 받은 뒤 <code>%USERPROFILE%\.ollama\models</code> 폴더를 복사해도 됩니다.</li>
+      <li><b>start.bat</b>으로 앱을 실행하고 이 화면에 "로컬 AI 연결됨"이 보이면 끝입니다.</li>
+    </ol>
+    <p class="note">권장 사양: 메모리 16GB 이상 (8GB PC는 <code>ai-setup.bat 3b</code>로 작은 모델). 그래픽카드가 없으면 답변 한 번에 수십 초 걸릴 수 있습니다.
+      모델마다 사용 조건(라이선스)이 다르니 회사 사용 전에 확인하세요. qwen2.5:7b는 Apache 2.0, 3b는 연구용 라이선스입니다.</p>
+    <p class="note">AI 없이도 동작합니다: 로컬 AI가 없으면 "몇 개·목록·평균·최고·최저·연도별" 같은 정해진 표현을 규칙으로 해석해 답합니다.</p>
+  </details>
+</div>
+
 <div class="wrap page" id="viewConnect" data-page="connect" hidden>
   <h1 class="page-title">기초서류 연결</h1>
   <p class="page-desc">공시실에서 내려받은 사업방법서·상품요약서·약관 PDF 폴더를 연결합니다. 문서는 내 PC 안에서만 읽고, 외부로는 아무것도 보내지 않습니다.</p>
@@ -852,6 +902,7 @@ $("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderA
 <script src="compare.js"></script>
 <script src="catalog.js"></script>
 <script src="layout.js"></script>
+<script src="chat.js"></script>
 <script src="product-db.js"></script>
 <script src="selfcheck.js"></script>
 <script src="examples.js"></script>
