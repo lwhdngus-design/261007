@@ -204,6 +204,8 @@
   .chip b { color: var(--accent); font-weight: 600; }
   .chip.ignored { background: var(--off-bg); border-color: var(--line); color: var(--muted); text-decoration: line-through; }
   .chip button { border: 0; background: transparent; padding: 0 6px; color: var(--muted); font-size: 13px; }
+  .sentbox { margin-bottom: 14px; }
+  .sentbox h3 { font-size: 15px; margin: 4px 0 6px; }
   .pcard { border: 1px solid var(--line); border-top: 2px solid var(--accent); padding: 14px 16px; margin-bottom: 12px; }
   .pcard h3 { margin: 0 0 4px; font-size: 17px; }
   .pcard .meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
@@ -391,9 +393,10 @@
     </form>
     <div class="interp" id="interp" hidden></div>
   </section>
-  <!-- 질문 답변: 특징으로 찾은 상품 (기초서류 PDF 기준) -->
+  <!-- 질문 답변: 질문 문장 그대로 찾은 원문 + 특징으로 찾은 상품 (기초서류 PDF 기준) -->
   <section class="panel" id="answerPanel" hidden>
     <h2>질문 답변 — 상품별</h2>
+    <div id="sentBox" class="sentbox" hidden></div>
     <p class="summary" id="answerSummary"></p>
     <div id="answerCards"></div>
   </section>
@@ -805,7 +808,7 @@ function render() {
   const cur = currentQuery();
   const q = cur.form;
   const terms = q.keyword.trim().split(/\s+/).map(norm).filter(Boolean);
-  const rows = search(q, cur.mode === "question" ? cur.Q.features : []);
+  const rows = search(q, cur.mode === "question" ? cur.Q.features : []); // 문장 질문은 기초서류 원문에서만 찾음
   $("summary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 전체 ${DB.products.length}건`;
   if (!rows.length) {
     $("results").innerHTML = `<tr><td colspan="6" class="empty">조건에 맞는 상품이 없습니다.</td></tr>`;

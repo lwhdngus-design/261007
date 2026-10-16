@@ -403,10 +403,10 @@ async function renderDocs(keepPage = false) {
   const seq = ++docsRenderSeq; // 빠르게 다시 검색하면 이전 결과는 버림
   if (!keepPage) docsPage = 1;
   const cur = currentQuery();
-  // 질문(특징) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
+  // 질문(특징·문장) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
   // 검색어·조건이 하나도 없으면 문서 목록 대신 상품 목록이 메인
   const f = cur.form, idle = !f.keyword.trim() && !f.from && !f.to && !f.category && !f.status && !f.docType;
-  if (!DOCS.length || cur.mode === "question" || idle) { $("docsPanel").hidden = true; return; }
+  if (!DOCS.length || cur.mode !== "keyword" || idle) { $("docsPanel").hidden = true; return; }
   $("docsPanel").hidden = false;
   let rows, snips, pageRows;
   const size = docsPageSize();

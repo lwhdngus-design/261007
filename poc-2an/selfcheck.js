@@ -31,6 +31,13 @@ const CHECKS = [
       const list = answerProducts({ mode: "question", Q, form: { ...BLANK_FORM, category: Q.category } });
       return `${list.length}개` + (list[0] ? ` · ${list[0].name}` : "");
     } },
+  { req: "상품명·판매시기·담보명 검색", name: "문장 질문 '사망 시 이미 납입한 보험료에서 인출금액을 차감한 금액을 지급하는 상품' (특징 사전 없이)", expect: "1개 · (무)가나다두갈래종신보험 약관 p.1",
+    run: async () => {
+      const Q = interpretQuestion("사망 시 이미 납입한 보험료에서 인출금액을 차감한 금액을 지급하는 상품이 뭐가 있어?");
+      const r = await sentenceAnswer({ Q, form: { ...BLANK_FORM } });
+      const list = groupSentenceHits(r.hits), h = list[0] && list[0].hits[0];
+      return `${list.length}개` + (h ? ` · ${list[0].name} ${h.doc.docType} p.${h.page}` : "");
+    } },
   // ---- 판매시기별 상품 목록 ----
   { req: "판매시기별 상품 목록", name: "상품 목록 자동 구성", expect: "상품 5 · 판매일자 10 · PDF 22",
     run: () => {

@@ -305,6 +305,51 @@ def snippets_for(ids, terms, per_doc=3):
     return out
 
 
+# ---------- 문장 질문 검색 (question.js 의 splitSentences·scoreSentence 와 같은 규칙) ----------
+SENT_SPLIT = re.compile(r"(?<=[.。!?])\s+")
+
+
+def split_sentences(text):
+    out = []
+    for piece in SENT_SPLIT.split(text or ""):
+        parts = re.split(r"\n+", piece) if len(piece) > 300 else [piece]
+        for p in parts:
+            for i in range(0, len(p), 300):
+                t = p[i:i + 300].strip()
+                if t:
+                    out.append(t)
+    return out
+
+
+def ask(groups, need, ids, per_doc=2):
+    """핵심어 묶음(같은 뜻 말 포함) 중 need개 이상이 한 문장에 있는 원문. 1) SQL로 그만큼 들어 있는 페이지만 고르고 2) 문장 단위로 채점"""
+    groups = [[norm(a) for a in g if norm(a)] for g in groups]
+    groups = [g for g in groups if g]
+    if not groups or not ids:
+        return []
+    need = max(1, min(int(need), len(groups)))
+    cond = " + ".join("(" + " OR ".join("instr(t, ?) > 0" for _ in g) + ")" for g in groups)
+    sql = (f"WITH n AS MATERIALIZED (SELECT doc_id, page_no, text, {SQL_NORM} AS t FROM pages "
+           f"WHERE doc_id IN (SELECT value FROM json_each(?))) "
+           f"SELECT doc_id, page_no, text FROM n WHERE ({cond}) >= ?")
+    params = [json.dumps([int(i) for i in ids])] + [a for g in groups for a in g] + [need]
+    best = {}
+    with connect() as c:
+        for doc_id, page_no, text in c.execute(sql, params):
+            for sent in split_sentences(text):
+                comp = norm(sent)
+                matched = [next((a for a in g if a in comp), "") for g in groups]
+                hits = sum(1 for m in matched if m)
+                if hits >= need:
+                    best.setdefault(doc_id, []).append({"id": doc_id, "page": page_no, "text": sent, "hits": hits,
+                                                        "matched": [m for m in matched if m], "len": len(comp)})
+    out = []
+    for lst in best.values():
+        lst.sort(key=lambda h: (-h["hits"], h["len"]))
+        out.extend(lst[:per_doc])
+    return out
+
+
 def doc_pages(doc_id):
     with connect() as c:
         return [t for (t,) in c.execute("SELECT text FROM pages WHERE doc_id=? ORDER BY page_no", (doc_id,))]
@@ -379,6 +424,8 @@ def make_handler(root):
                     return self.send_json(index_doc(body))
                 if path == "/api/search":
                     return self.send_json({"ids": search_ids(body.get("terms", []))})
+                if path == "/api/ask":
+                    return self.send_json({"hits": ask(body.get("groups", []), body.get("need", 1), body.get("ids", []))})
                 if path == "/api/snippets":
                     res = snippets_for([int(i) for i in body.get("ids", [])][:300], body.get("terms", []))
                     return self.send_json({"snippets": {str(k): v for k, v in res.items()}})
