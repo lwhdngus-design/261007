@@ -520,7 +520,7 @@ dummy-data 폴더의 products.csv, coverages.csv, documents.csv, portfolio.csv �
 
 ## 18. 최신 버전 받기
 
-- `update.bat` 더블클릭 → 깃허브에서 최신 버전을 받습니다(`git pull` 명령과 같음).
+- `update.bat` 더블클릭 → 최신 버전을 받습니다. git으로 받은 폴더는 `git pull`, **ZIP으로 받은 폴더(또는 git이 없는 PC)는 최신 ZIP을 직접 내려받아 덮어씁니다**(폴더 설정 `docs-folder.txt`·검색 색인 `.docs-cache`는 그대로). 인터넷이 막혀 자동으로 못 받으면 수동으로 덮어쓰는 방법을 안내합니다.
 - 명령으로 할 때: 앱 폴더 주소창에 `cmd` 입력 → Enter → `git pull`
 
 ## 19. 공시실 서류 내려받기 (기초서류 연결 화면 안내)
