@@ -210,7 +210,25 @@ async function showDocPage(d, page) {
 if (DEMO_MODE) {
   document.querySelector(".util").insertAdjacentHTML("beforeend", `<span class="hl">웹 데모 · 가상 데이터</span>`);
   // compare.js의 download(엑셀·CSV 저장)를 안내로 바꿈
-  download = name => demoNotice(`웹 데모에서는 파일 저장(${name})이 막혀 있습니다. 내 PC에서 start-sample.bat으로 실행한 앱에서 저장할 수 있습니다.`);
+  // 웹 데모(claude.ai)에서는 일반 내려받기 링크가 막혀 있어, 보는 사람이 확인하는 저장 창(downloads)으로 저장
+  const demoSave = async (name, data) => {
+    const dl = window.claude && window.claude.use ? await window.claude.use("downloads") : null;
+    if (!dl) { demoNotice(`웹 데모에서는 파일 저장(${name})이 막혀 있습니다. 내 PC에서 start-sample.bat으로 실행한 앱에서 저장할 수 있습니다.`); return; }
+    try { await dl.save({ filename: name, data }); } catch (err) {
+      if (err && err.code !== "declined") demoNotice(`저장하지 못했습니다(${err.code || err.message}). 깃허브 링크에서 받아 주세요.`);
+    }
+  };
+  download = (name, text) => demoSave(name, text);
+  document.addEventListener("click", async e => {
+    const a = e.target.closest('a[href="main-logic.txt"][download]');
+    if (!a) return;
+    e.preventDefault();
+    try {
+      const res = await fetch("main-logic.txt");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      await demoSave("main-logic.txt", await res.text());
+    } catch (err) { demoNotice("파일을 읽지 못했습니다: " + err.message); }
+  });
 }
 
 renderEduInfo();
