@@ -82,6 +82,7 @@ function renderEduInfo() {
     ? `<b class="ok-text">지금 가상 샘플로 실행 중입니다.</b> 상단 [기초서류 검색]·[상품 목록]에서 바로 실습하세요.`
     : SERVER_MODE ? `지금은 내 기초서류 폴더로 실행 중입니다${folder ? ` (${esc(folder)})` : ""}.` : "";
   if (DEMO_MODE) $("sampleZipNote").textContent = "웹 데모에서는 저장이 막혀 있음";
+  if (DEMO_MODE) document.querySelectorAll(".demo-only").forEach(el => { el.hidden = false; });
   if (DEMO_MODE) $("sampleModeNote").innerHTML = `<b class="ok-text">지금 웹 데모로 실행 중입니다.</b> 가상 샘플이 이미 연결되어 있어 상단 [기초서류 검색]·[상품 목록]에서 바로 실습할 수 있습니다.`;
   if (!SERVER_MODE && !DEMO_MODE) $("sampleZipNote").textContent = "start.bat / start-sample.bat으로 실행했을 때 내려받을 수 있습니다";
 }

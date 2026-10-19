@@ -59,6 +59,12 @@
   .proc-body { padding: 18px 22px 22px; min-width: 0; }
   .proc-body h2 { font-size: 19px; margin: 0 0 8px; }
   .proc-body p { margin: 0 0 8px; line-height: 1.65; }
+  .dl-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  a.btnlink { display: inline-block; padding: 7px 16px; border: 1px solid var(--line-2); background: #fff; color: var(--text); text-decoration: none; font-size: 14px; }
+  a.btnlink:hover { border-color: var(--accent); color: var(--accent); }
+  a.btnlink.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  a.btnlink.primary:hover { color: #fff; filter: brightness(1.08); }
+  code.url { word-break: break-all; font-size: 12px; user-select: all; }
   table.dl td:last-child { white-space: nowrap; text-align: center; width: 150px; }
   table.dl td:first-child { font-weight: 600; white-space: nowrap; }
   table.dl tbody tr { cursor: default; }
@@ -650,12 +656,34 @@ python hanalife_download.py                ← 판매 + 판매중지 전체</pre
 
   <ol class="proc">
     <li>
+      <div class="proc-no">코드</div>
+      <div class="proc-body">
+        <h2>핵심 로직 코드 (main-logic.txt)</h2>
+        <p>앱의 핵심 로직(Main Logic)을 수정·요약 없이 그대로 모은 텍스트 파일입니다. 화면 디자인/스타일 코드와 기능 설명은 빠져 있고, 인증정보(API 키·비밀번호)는 없습니다.</p>
+        <div class="dl-links">
+          <a class="btnlink primary" href="main-logic.txt" download>main-logic.txt 내려받기</a>
+          <a class="btnlink" href="https://github.com/lwhdngus-design/261007/blob/claude/excel-2an-sheet-format-svwm4c/poc-2an/main-logic.txt" target="_blank" rel="noopener">깃허브에서 보기</a>
+        </div>
+        <p class="note">포함: serve.py · build-data.py · index.html(스크립트만) · pdf-docs.js · question.js · analysis.js · compare.js · catalog.js · product-db.js · chat.js
+          — 앱 폴더에서 <code>python export-logic.py</code>를 실행하면 최신 코드로 다시 만들어집니다.</p>
+        <p class="note demo-only" hidden>웹 데모에서 내려받기가 막히면 아래 주소를 복사해 새 탭에서 여세요(깃허브 화면 오른쪽 위 내려받기 버튼).<br><code class="url">https://github.com/lwhdngus-design/261007/blob/claude/excel-2an-sheet-format-svwm4c/poc-2an/main-logic.txt</code></p>
+      </div>
+    </li>
+    <li>
       <div class="proc-no">STEP 1</div>
       <div class="proc-body">
         <h2>앱 받기</h2>
-        <p>Git으로 받거나, 깃허브 화면에서 브랜치를 고른 뒤 Code → Download ZIP으로 받아 압축을 풉니다. 이미 받았다면 <b>update.bat</b>으로 최신 버전을 받습니다.</p>
+        <p>아래 <b>ZIP 바로 받기</b>를 눌러 내려받고 압축을 푼 뒤, 안의 <b>poc-2an</b> 폴더에서 <b>start-sample.bat</b>(가상 샘플) 또는 <b>start.bat</b>(내 기초서류 폴더)을 실행합니다.
+          이미 받았다면 <b>update.bat</b>으로 최신 버전을 받습니다(화면이 그대로면 Ctrl+F5).</p>
+        <div class="dl-links">
+          <a class="btnlink primary" href="https://github.com/lwhdngus-design/261007/archive/refs/heads/claude/excel-2an-sheet-format-svwm4c.zip" target="_blank" rel="noopener">ZIP 바로 받기</a>
+          <a class="btnlink" href="https://github.com/lwhdngus-design/261007/tree/claude/excel-2an-sheet-format-svwm4c/poc-2an" target="_blank" rel="noopener">깃허브에서 보기</a>
+        </div>
+        <p class="note">링크가 열리지 않으면 주소를 복사해 새 탭에서 여세요.<br>
+          ZIP: <code class="url">https://github.com/lwhdngus-design/261007/archive/refs/heads/claude/excel-2an-sheet-format-svwm4c.zip</code><br>깃허브: <code class="url">https://github.com/lwhdngus-design/261007/tree/claude/excel-2an-sheet-format-svwm4c/poc-2an</code></p>
+        <p>Git이 설치되어 있으면 명령 프롬프트에서 받을 수도 있습니다.</p>
         <pre class="cmd">git clone -b claude/excel-2an-sheet-format-svwm4c https://github.com/lwhdngus-design/261007.git</pre>
-        <p class="note">필요한 프로그램: Python 3 (추가 설치 패키지 없음), Chrome 권장</p>
+        <p class="note">필요한 프로그램: Python 3 (추가 설치 패키지 없음, 설치 때 "Add Python to PATH" 체크), Chrome 권장</p>
       </div>
     </li>
     <li>
