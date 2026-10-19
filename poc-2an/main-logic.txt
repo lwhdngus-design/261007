@@ -1,0 +1,3321 @@
+상품 검증 기준자료 통합 검색 — 핵심 로직(Main Logic) 추출본
+현재 구현된 코드를 수정·요약 없이 그대로 옮김 (화면 디자인/스타일 코드와 기능 설명은 제외)
+포함 파일: serve.py, build-data.py, index.html, pdf-docs.js, question.js, analysis.js, compare.js, catalog.js, product-db.js, chat.js
+제외: index.html의 CSS·HTML 마크업, layout.js(화면 배치), README(기능 설명), lib/(외부 라이브러리 pdf.js), data.js(가상 데이터), selfcheck.js·examples.js(검증·예시)
+인증정보: 코드에 API 키·비밀번호 등 인증정보 없음
+
+====================================================================================================
+# FILE: serve.py  (로컬 실행기 · 검색 색인(SQLite) · 문장 질문 검색 · 로컬 AI 연결)
+====================================================================================================
+# 로컬 실행기 — 내 PC의 기초서류 폴더를 앱에 자동 연결하고, 검색 색인(SQLite)으로 대량 문서를 빠르게 검색
+# 파이썬 기본 기능만 사용 (추가 설치 없음)
+#
+#   python serve.py                         → docs-folder.txt 의 폴더 사용 (없으면 처음에 한 번 물어봄)
+#   python serve.py --folder "C:\...\2026"  → 폴더 변경(저장됨)
+#
+# - 이 PC(127.0.0.1)에서만 접속됩니다. 외부로 아무것도 보내지 않습니다.
+# - PDF 글자 추출은 브라우저(pdf.js)가 하고, 결과를 .docs-cache/index.db 에 저장합니다.
+#   다음 실행부터는 새로 추가·수정된 파일만 다시 읽습니다. (.docs-cache 폴더를 지우면 초기화)
+# - 특징 사전(dummy-data/features.csv)이 바뀌면 저장된 글자로 특징 태그를 자동으로 다시 계산합니다.
+# - AI 질문: 내 PC의 로컬 AI(Ollama, 127.0.0.1:11434)에만 연결합니다. 없으면 앱이 규칙 해석으로 답합니다.
+import argparse
+import csv
+import hashlib
+import http.server
+import json
+import os
+import re
+import socketserver
+import sqlite3
+import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+import shutil
+import subprocess
+import webbrowser
+from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+CONFIG = APP_DIR / "docs-folder.txt"
+SAMPLE_DIR = "sample-기초서류폴더"  # 교육용 가상 기초서류 (가나다생명)
+CACHE_DIR = APP_DIR / ".docs-cache"
+DB_PATH = CACHE_DIR / "index.db"
+FEATURES_CSV = APP_DIR / "dummy-data" / "features.csv"
+MAX_POST = 300 * 1024 * 1024
+WRITE_LOCK = threading.Lock()
+# 로컬 AI(Ollama) — 이 PC 안의 주소만 사용 (프록시 설정도 무시해 외부로 나가지 않음)
+OLLAMA_URL = "http://127.0.0.1:11434"
+AI_RECOMMENDED = ["qwen2.5:7b", "qwen2.5:14b", "qwen2.5:3b"]
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def norm(s):
+    return re.sub(r"\s+", "", s or "").lower()
+
+
+# ---------- 폴더 설정 ----------
+def ask_folder():
+    while True:
+        raw = input("기초서류 PDF 폴더 경로를 붙여넣고 Enter\n"
+                    "(탐색기에서 기초서류 폴더를 열고 주소창 경로를 복사. 예: C:\\Users\\user\\Desktop\\App_261014\\doc_sample)\n> ")
+        p = Path(raw.strip().strip('"'))
+        if p.is_dir():
+            return p
+        print(f"폴더를 찾을 수 없습니다: {p}\n")
+
+
+def docs_root(cli_folder):
+    if cli_folder:
+        p = Path(cli_folder.strip('"'))
+        if not p.is_dir():
+            sys.exit(f"폴더를 찾을 수 없습니다: {p}")
+    elif CONFIG.exists() and Path(CONFIG.read_text(encoding="utf-8").strip()).is_dir():
+        p = Path(CONFIG.read_text(encoding="utf-8").strip())
+    else:
+        p = ask_folder()
+    CONFIG.write_text(str(p.resolve()), encoding="utf-8")
+    return p.resolve()
+
+
+# ---------- 색인 DB ----------
+def connect():
+    CACHE_DIR.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.create_function("norm", 1, norm, deterministic=True)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_db():
+    with connect() as c:
+        c.executescript("""
+          CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY, path TEXT UNIQUE, size INT, mtime INT,
+                                          error TEXT, n_pages INT);
+          CREATE TABLE IF NOT EXISTS pages(id INTEGER PRIMARY KEY, doc_id INT, page_no INT, text TEXT);
+          CREATE INDEX IF NOT EXISTS pages_doc ON pages(doc_id, page_no);
+          CREATE TABLE IF NOT EXISTS tags(doc_id INT, feature_id TEXT, evidence TEXT, PRIMARY KEY(doc_id, feature_id));
+          CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+        """)
+        # 공백을 뺀 본문을 3글자 단위로 색인 (부분 일치 검색용, 본문은 pages 테이블에만 저장)
+        c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(compact, tokenize='trigram', detail='none', content='')")
+
+
+def delete_doc(c, doc_id):
+    for pid, text in c.execute("SELECT id, text FROM pages WHERE doc_id=?", (doc_id,)).fetchall():
+        c.execute("INSERT INTO pages_fts(pages_fts, rowid, compact) VALUES('delete', ?, ?)", (pid, norm(text)))
+    c.execute("DELETE FROM pages WHERE doc_id=?", (doc_id,))
+    c.execute("DELETE FROM tags WHERE doc_id=?", (doc_id,))
+    c.execute("DELETE FROM docs WHERE id=?", (doc_id,))
+
+
+# ---------- 특징 태그 (질문 검색용, 색인 시 미리 계산) ----------
+def load_features():
+    if not FEATURES_CSV.exists():
+        return [], ""
+    raw = FEATURES_CSV.read_bytes()
+    feats = []
+    for r in csv.DictReader(raw.decode("utf-8-sig").splitlines()):
+        pats = []
+        for p in filter(None, (r.get("doc_patterns") or "").split(";")):
+            try:
+                pats.append(re.compile(p, re.I))
+            except re.error as e:
+                print(f"[경고] 특징 {r.get('feature_id')} 패턴 오류 '{p}': {e}")
+        if pats:
+            feats.append((r["feature_id"], pats))
+    return feats, hashlib.sha1(raw).hexdigest()
+
+
+def compact_map(text):
+    idx, chars = [], []
+    for i, ch in enumerate(text):
+        if not ch.isspace():
+            chars.append(ch.lower())
+            idx.append(i)
+    return "".join(chars), idx
+
+
+def cut(text, idx, s_c, e_c, before=50, after=70):
+    s, e = idx[s_c], idx[e_c - 1] + 1
+    a, b = max(0, s - before), min(len(text), e + after)
+    return {"before": text[a:s], "hit": text[s:e], "after": text[e:b], "lead": a > 0, "tail": b < len(text)}
+
+
+def doc_tags(path, pages, feats):
+    """문서에 모든 패턴이 있으면 그 특징으로 태그. 근거 = 패턴별 첫 페이지 문맥"""
+    maps = [compact_map(t) for t in pages]
+    whole = norm(path) + "".join(m[0] for m in maps)
+    out = {}
+    for fid, pats in feats:
+        if not all(p.search(whole) for p in pats):
+            continue
+        ev = []
+        for p in pats:
+            for pi, (comp, idx) in enumerate(maps):
+                m = p.search(comp)
+                if m and m.end() > m.start():
+                    ev.append({"page": pi + 1, **cut(pages[pi], idx, m.start(), m.end())})
+                    break
+        out[fid] = ev
+    return out
+
+
+def write_tags(c, doc_id, tags):
+    c.execute("DELETE FROM tags WHERE doc_id=?", (doc_id,))
+    c.executemany("INSERT INTO tags VALUES(?,?,?)",
+                  [(doc_id, fid, json.dumps(ev, ensure_ascii=False)) for fid, ev in tags.items()])
+
+
+def ensure_tags():
+    feats, h = load_features()
+    with WRITE_LOCK, connect() as c:
+        row = c.execute("SELECT value FROM meta WHERE key='features_hash'").fetchone()
+        if row and row[0] == h:
+            return
+        docs = c.execute("SELECT id, path FROM docs").fetchall()
+        if docs:
+            print(f"특징 사전이 바뀌어 특징 태그를 다시 계산합니다 ({len(docs)}개 문서)...")
+        for doc_id, path in docs:
+            pages = [t for (t,) in c.execute("SELECT text FROM pages WHERE doc_id=? ORDER BY page_no", (doc_id,))]
+            write_tags(c, doc_id, doc_tags(path, pages, feats))
+        c.execute("INSERT OR REPLACE INTO meta VALUES('features_hash', ?)", (h,))
+
+
+def index_doc(item):
+    """브라우저가 보낸 추출 결과 저장: {path, size, mtime, pages, error}"""
+    feats, _ = load_features()
+    pages = [p or "" for p in item.get("pages") or []]
+    with WRITE_LOCK, connect() as c:
+        old = c.execute("SELECT id FROM docs WHERE path=?", (item["path"],)).fetchone()
+        if old:
+            delete_doc(c, old[0])
+        cur = c.execute("INSERT INTO docs(path, size, mtime, error, n_pages) VALUES(?,?,?,?,?)",
+                        (item["path"], item["size"], item["mtime"], item.get("error") or "", len(pages)))
+        doc_id = cur.lastrowid
+        for i, t in enumerate(pages):
+            pid = c.execute("INSERT INTO pages(doc_id, page_no, text) VALUES(?,?,?)", (doc_id, i + 1, t)).lastrowid
+            c.execute("INSERT INTO pages_fts(rowid, compact) VALUES(?,?)", (pid, norm(t)))
+        tags = doc_tags(item["path"], pages, feats)
+        write_tags(c, doc_id, tags)
+    return {"id": doc_id, "features": tags, "error": item.get("error") or "", "n_pages": len(pages)}
+
+
+def import_json_cache():
+    """이전 버전(.docs-cache/*.json) 캐시를 DB로 옮김 → 다시 읽지 않아도 됨"""
+    files = list(CACHE_DIR.glob("*.json")) if CACHE_DIR.exists() else []
+    for f in files:
+        try:
+            c = json.loads(f.read_text(encoding="utf-8"))
+            if c.get("path"):
+                index_doc(c)
+            f.unlink()
+        except (OSError, ValueError, KeyError):
+            pass
+    if files:
+        print(f"이전 캐시 {len(files)}개를 색인으로 옮겼습니다.")
+
+
+# ---------- 목록 ----------
+def list_docs(root):
+    on_disk = {}
+    for dirpath, _, names in os.walk(root):
+        for n in sorted(names):
+            if n.lower().endswith(".pdf"):
+                full = Path(dirpath) / n
+                st = full.stat()
+                rel = root.name + "/" + full.relative_to(root).as_posix()  # 폴더 선택 방식과 같은 경로 형태
+                on_disk[rel] = (st.st_size, int(st.st_mtime))
+    with connect() as c:
+        rows = {p: (i, s, m, e, n) for i, p, s, m, e, n in c.execute("SELECT id, path, size, mtime, error, n_pages FROM docs")}
+        tags = {}
+        for doc_id, fid, ev in c.execute("SELECT doc_id, feature_id, evidence FROM tags"):
+            tags.setdefault(doc_id, {})[fid] = json.loads(ev)
+    # 지금 폴더 안에서 없어진 파일만 색인에서 뺌 (다른 폴더의 색인은 그대로 둠 → 폴더를 바꿔도 다시 읽지 않음)
+    prefix = root.name + "/"
+    gone = [r[0] for p, r in rows.items() if p.startswith(prefix) and p not in on_disk]
+    if gone:
+        with WRITE_LOCK, connect() as c:
+            for doc_id in gone:
+                delete_doc(c, doc_id)
+    files = []
+    for rel, (size, mtime) in on_disk.items():
+        item = {"path": rel, "size": size, "mtime": mtime, "indexed": False}
+        r = rows.get(rel)
+        if r and r[1] == size and r[2] == mtime:
+            item.update(id=r[0], indexed=True, error=r[3] or "", n_pages=r[4], features=tags.get(r[0], {}))
+        files.append(item)
+    return {"root": root.name, "folder": str(root), "files": files}
+
+
+# ---------- 검색 ----------
+# 공백 제거·소문자 본문을 SQLite 내장 함수로 계산 (파이썬 함수보다 훨씬 빠름)
+# 일반 공백·줄바꿈·탭·CR, 줄바꿈 없는 공백(U+00A0), 전각 공백(U+3000)
+SQL_NORM = "lower(" + "replace(" * 6 + "text" + "".join(
+    f", {ch}, '')" for ch in ("' '", "char(10)", "char(13)", "char(9)", "char(160)", "char(12288)")) + ")"
+
+
+def trigram_query(term):
+    return " AND ".join('"' + term[i:i + 3].replace('"', '""') + '"' for i in range(len(term) - 2))
+
+
+def search_ids(terms, limit_ids=None):
+    """모든 단어가 들어 있는 문서 id (문서 단위 AND, 공백 무시, 파일 경로 포함)"""
+    terms = sorted({norm(t) for t in terms if norm(t)}, key=len, reverse=True)  # 긴 단어부터 → 후보 축소
+    pnorm = SQL_NORM
+    with connect() as c:
+        paths = {i: norm(p) for i, p in c.execute("SELECT id, path FROM docs")}
+        ids = set(paths) if limit_ids is None else set(limit_ids) & set(paths)
+        for t in terms:
+            hit = {i for i in ids if t in paths[i]}
+            rest = ids - hit
+            if len(t) >= 3:
+                # 1) 3글자 색인으로 후보 페이지(본문 없이 id만)  2) 문서마다 실제 포함 페이지를 1개만 확인하고 멈춤
+                cand = {}
+                for doc_id, pid in c.execute("SELECT p.doc_id, p.id FROM pages_fts f JOIN pages p ON p.id=f.rowid "
+                                             "WHERE pages_fts MATCH ? ORDER BY p.doc_id, p.id", (trigram_query(t),)):
+                    if doc_id in rest:
+                        cand.setdefault(doc_id, []).append(pid)
+                for doc_id, pids in cand.items():
+                    for k in range(0, len(pids), 500):
+                        chunk = pids[k:k + 500]
+                        if c.execute(f"SELECT 1 FROM pages WHERE id IN ({','.join('?' * len(chunk))}) "
+                                     f"AND instr({pnorm}, ?) > 0 LIMIT 1", chunk + [t]).fetchone():
+                            hit.add(doc_id)
+                            break
+            else:
+                # 1~2글자 단어는 색인을 못 써서 문서마다 페이지를 훑되, 찾으면 바로 멈춤
+                for doc_id in rest:
+                    if c.execute(f"SELECT 1 FROM pages WHERE doc_id=? AND instr({pnorm}, ?) > 0 LIMIT 1",
+                                 (doc_id, t)).fetchone():
+                        hit.add(doc_id)
+            ids = hit
+            if not ids:
+                break
+    return sorted(ids)
+
+
+def snippets_for(ids, terms, per_doc=3):
+    terms = [norm(t) for t in terms if norm(t)]
+    out = {}
+    with connect() as c:
+        for doc_id in ids:
+            snips = []
+            for t in terms:
+                if len(snips) >= per_doc:
+                    break
+                if len(t) >= 3:
+                    rows = c.execute("SELECT p.page_no, p.text FROM pages_fts f JOIN pages p ON p.id=f.rowid "
+                                     "WHERE pages_fts MATCH ? AND p.doc_id=? ORDER BY p.page_no", (trigram_query(t), doc_id))
+                else:
+                    rows = c.execute(f"SELECT page_no, text FROM pages WHERE doc_id=? AND instr({SQL_NORM}, ?) > 0 "
+                                     "ORDER BY page_no", (doc_id, t))
+                for page_no, text in rows:
+                    comp, idx = compact_map(text)
+                    k = comp.find(t)
+                    if k != -1:
+                        snips.append({"page": page_no, **cut(text, idx, k, k + len(t), 40, 40)})
+                        break
+            out[doc_id] = snips
+    return out
+
+
+# ---------- 문장 질문 검색 (question.js 의 splitSentences·scoreSentence 와 같은 규칙) ----------
+SENT_SPLIT = re.compile(r"(?<=[.。!?])\s+")
+
+
+def split_sentences(text):
+    out = []
+    for piece in SENT_SPLIT.split(text or ""):
+        parts = re.split(r"\n+", piece) if len(piece) > 300 else [piece]
+        for p in parts:
+            for i in range(0, len(p), 300):
+                t = p[i:i + 300].strip()
+                if t:
+                    out.append(t)
+    return out
+
+
+def ask(groups, need, ids, per_doc=2):
+    """핵심어 묶음(같은 뜻 말 포함) 중 need개 이상이 한 문장에 있는 원문. 1) SQL로 그만큼 들어 있는 페이지만 고르고 2) 문장 단위로 채점"""
+    groups = [[norm(a) for a in g if norm(a)] for g in groups]
+    groups = [g for g in groups if g]
+    if not groups or not ids:
+        return []
+    need = max(1, min(int(need), len(groups)))
+    cond = " + ".join("(" + " OR ".join("instr(t, ?) > 0" for _ in g) + ")" for g in groups)
+    sql = (f"WITH n AS MATERIALIZED (SELECT doc_id, page_no, text, {SQL_NORM} AS t FROM pages "
+           f"WHERE doc_id IN (SELECT value FROM json_each(?))) "
+           f"SELECT doc_id, page_no, text FROM n WHERE ({cond}) >= ?")
+    params = [json.dumps([int(i) for i in ids])] + [a for g in groups for a in g] + [need]
+    best = {}
+    with connect() as c:
+        for doc_id, page_no, text in c.execute(sql, params):
+            for sent in split_sentences(text):
+                comp = norm(sent)
+                matched = [next((a for a in g if a in comp), "") for g in groups]
+                hits = sum(1 for m in matched if m)
+                if hits >= need:
+                    best.setdefault(doc_id, []).append({"id": doc_id, "page": page_no, "text": sent, "hits": hits,
+                                                        "matched": [m for m in matched if m], "len": len(comp)})
+    out = []
+    for lst in best.values():
+        lst.sort(key=lambda h: (-h["hits"], h["len"]))
+        out.extend(lst[:per_doc])
+    return out
+
+
+def near_words(ids, words, after=80, per_doc=6):
+    """문서마다 단어가 처음 나오는 곳 뒤쪽 원문(공백 제거) — AI 질문의 값 읽기(예정이율 등)"""
+    words = [norm(w) for w in words if norm(w)]
+    if not words or not ids:
+        return []
+    cond = " OR ".join("instr(t, ?) > 0" for _ in words)
+    sql = (f"WITH n AS MATERIALIZED (SELECT doc_id, page_no, {SQL_NORM} AS t FROM pages "
+           f"WHERE doc_id IN (SELECT value FROM json_each(?))) "
+           f"SELECT doc_id, page_no, t FROM n WHERE {cond} ORDER BY doc_id, page_no")
+    out, count = [], {}
+    with connect() as c:
+        for doc_id, page_no, t in c.execute(sql, [json.dumps([int(i) for i in ids])] + words):
+            if count.get(doc_id, 0) >= per_doc:
+                continue
+            for w in words:
+                k = t.find(w)
+                if k != -1:
+                    out.append({"id": doc_id, "page": page_no, "text": t[k:k + after]})
+                    count[doc_id] = count.get(doc_id, 0) + 1
+                    break
+    return out
+
+
+# ---------- 로컬 AI (Ollama) ----------
+def ollama(path, body=None, timeout=5):
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(OLLAMA_URL + path, data=data, headers={"Content-Type": "application/json"})
+    with NO_PROXY.open(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def ai_status():
+    try:
+        models = [m["name"] for m in ollama("/api/tags").get("models", [])]
+    except (OSError, ValueError, urllib.error.URLError) as e:
+        return {"ok": False, "models": [], "error": f"로컬 AI 연결 안 됨 ({e.__class__.__name__})"}
+    rec = next((m for r in AI_RECOMMENDED for m in models if m == r or m.startswith(r + "-")), models[0] if models else "")
+    return {"ok": bool(models), "models": models, "recommended": rec}
+
+
+def ai_chat(body):
+    req = {"model": str(body.get("model") or ""), "messages": body.get("messages") or [], "stream": False,
+           "keep_alive": "15m", "options": body.get("options") or {}}
+    if body.get("format"):
+        req["format"] = body["format"]
+    try:
+        r = ollama("/api/chat", req, timeout=600)
+    except urllib.error.HTTPError as e:
+        if req.get("format") and req["format"] != "json":  # 오래된 Ollama: JSON 형식 지정(스키마) 미지원 → 일반 JSON 모드
+            req["format"] = "json"
+            r = ollama("/api/chat", req, timeout=600)
+        else:
+            raise ValueError(f"로컬 AI 오류 {e.code}: {e.read().decode('utf-8', 'replace')[:200]}")
+    return {"content": (r.get("message") or {}).get("content", "")}
+
+
+def doc_pages(doc_id):
+    with connect() as c:
+        return [t for (t,) in c.execute("SELECT text FROM pages WHERE doc_id=? ORDER BY page_no", (doc_id,))]
+
+
+# ---------- 웹 서버 ----------
+def make_handler(root):
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=str(APP_DIR), **kw)
+
+        def log_message(self, *a):  # 콘솔을 조용하게
+            pass
+
+        def end_headers(self):
+            # 업데이트(git pull) 후 브라우저가 예전 화면을 캐시에서 꺼내 쓰지 않도록 매번 새로 받게 함
+            self.send_header("Cache-Control", "no-cache")
+            super().end_headers()
+
+        def send_json(self, obj, code=200):
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def read_json(self):
+            n = int(self.headers.get("Content-Length", 0))
+            if n <= 0 or n > MAX_POST:
+                raise ValueError("요청 크기 오류")
+            return json.loads(self.rfile.read(n).decode("utf-8"))
+
+        def doc_path(self, rel):
+            # "<루트폴더명>/하위/파일.pdf" → 실제 경로 (루트 밖으로 나가는 경로는 거부)
+            parts = rel.split("/", 1)
+            if len(parts) != 2 or parts[0] != root.name:
+                return None
+            p = (root / parts[1]).resolve()
+            return p if p.is_file() and p.suffix.lower() == ".pdf" and root in p.parents else None
+
+        def do_GET(self):
+            url = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(url.query)
+            if url.path == "/api/docs":
+                ensure_tags()
+                return self.send_json(list_docs(root))
+            if url.path == "/api/ai/status":
+                return self.send_json(ai_status())
+            if url.path == "/api/pages":
+                return self.send_json({"pages": doc_pages(int(qs.get("id", ["0"])[0]))})
+            if url.path.startswith("/docs/"):
+                p = self.doc_path(urllib.parse.unquote(url.path[len("/docs/"):]))
+                if not p:
+                    return self.send_error(404)
+                data = p.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if url.path.startswith("/.docs-cache") or url.path.endswith("docs-folder.txt"):
+                return self.send_error(404)
+            return super().do_GET()
+
+        def do_POST(self):
+            path = urllib.parse.urlparse(self.path).path
+            try:
+                body = self.read_json()
+                if path == "/api/index":
+                    if not self.doc_path(body["path"]):
+                        return self.send_json({"error": "폴더 밖 경로"}, 400)
+                    return self.send_json(index_doc(body))
+                if path == "/api/search":
+                    return self.send_json({"ids": search_ids(body.get("terms", []))})
+                if path == "/api/ask":
+                    return self.send_json({"hits": ask(body.get("groups", []), body.get("need", 1), body.get("ids", []))})
+                if path == "/api/near":
+                    return self.send_json({"hits": near_words(body.get("ids", []), body.get("words", []))})
+                if path == "/api/ai/chat":
+                    return self.send_json(ai_chat(body))
+                if path == "/api/snippets":
+                    res = snippets_for([int(i) for i in body.get("ids", [])][:300], body.get("terms", []))
+                    return self.send_json({"snippets": {str(k): v for k, v in res.items()}})
+            except (ValueError, KeyError, TypeError, OSError, sqlite3.Error, urllib.error.URLError) as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_error(404)
+
+    return Handler
+
+
+# ---------- 브라우저 열기 (크롬 우선) ----------
+def find_chrome():
+    """설치된 크롬 실행 파일 경로 (없으면 None)"""
+    cands = []
+    if os.name == "nt":
+        for base in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"), os.environ.get("LOCALAPPDATA")):
+            if base:
+                cands.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        try:  # 레지스트리에 등록된 설치 경로
+            import winreg
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as k:
+                        cands.append(Path(winreg.QueryValue(k, None)))
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+    elif sys.platform == "darwin":
+        cands.append(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+    else:
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            if shutil.which(name):
+                cands.append(Path(shutil.which(name)))
+    return next((str(c) for c in cands if c and c.is_file()), None)
+
+
+def open_browser(url, which):
+    if which == "chrome":
+        chrome = find_chrome()
+        if chrome:
+            subprocess.Popen([chrome, url])
+            return "크롬"
+        print("크롬을 찾지 못해 기본 브라우저로 엽니다.")
+    webbrowser.open(url)
+    return "기본 브라우저"
+
+
+class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+
+
+def main():
+    ap = argparse.ArgumentParser(description="기초서류 폴더 자동 연결 실행기")
+    ap.add_argument("--folder", help="기초서류 PDF 폴더 경로 (한 번 지정하면 저장됨)")
+    ap.add_argument("--sample", action="store_true",
+                    help="교육용 가상 샘플 폴더(sample-기초서류폴더)로 실행 (저장된 폴더 설정은 바꾸지 않음)")
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--browser", choices=["chrome", "default"], default="chrome",
+                    help="열 브라우저: chrome(기본, 없으면 기본 브라우저) / default(Windows 기본 브라우저)")
+    args = ap.parse_args()
+
+    root = (APP_DIR / SAMPLE_DIR).resolve() if args.sample else docs_root(args.folder)
+    init_db()
+    import_json_cache()
+    ensure_tags()
+    server = None
+    for port in range(args.port, args.port + 20):
+        try:
+            server = Server(("127.0.0.1", port), make_handler(root))
+            break
+        except OSError:
+            continue
+    if not server:
+        sys.exit("사용할 수 있는 포트를 찾지 못했습니다.")
+    url = f"http://127.0.0.1:{server.server_address[1]}/index.html"
+    print(f"기초서류 폴더: {root}")
+    print(f"앱 주소: {url}")
+    st = ai_status()
+    print(f"로컬 AI: 연결됨 (모델 {', '.join(st['models'])})" if st["ok"] else
+          "로컬 AI: 없음 → AI 질문은 규칙 해석으로 답합니다 (설치: ai-setup.bat)")
+    print("이 창을 닫으면 앱이 종료됩니다. (폴더 변경: python serve.py --folder \"경로\")")
+    if not args.no_browser:
+        threading.Timer(0.8, lambda: print(f"{open_browser(url, args.browser)}로 열었습니다.")).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
+
+====================================================================================================
+# FILE: build-data.py  (가상 데이터(CSV) → data.js 변환)
+====================================================================================================
+# dummy-data/*.csv -> data.js (index.html을 서버 없이 더블클릭으로 열기 위해 CSV를 JS로 묶음)
+# CSV 수정 후 실행: python3 build-data.py
+import json, pathlib
+here = pathlib.Path(__file__).parent
+names = ["products", "coverages", "portfolio", "documents", "features"]
+data = {n: (here / "dummy-data" / f"{n}.csv").read_text(encoding="utf-8-sig") for n in names}
+# 교육용 가상 기초서류 PDF 목록 (교육용 실습 화면의 ZIP 내려받기에 사용)
+sample = here / "sample-기초서류폴더"
+files = sorted(p.relative_to(here).as_posix() for p in sample.rglob("*.pdf")) if sample.is_dir() else []
+(here / "data.js").write_text(
+    "// 자동 생성 파일 — 직접 수정하지 말고 build-data.py를 실행하세요\nwindow.CSV_DATA = " + json.dumps(data, ensure_ascii=False, indent=1) + ";\n"
+    + "window.SAMPLE_FILES = " + json.dumps(files, ensure_ascii=False, indent=1) + ";\n",
+    encoding="utf-8")
+print("data.js written")
+
+====================================================================================================
+# FILE: index.html  (기본 검색 로직 (<script> 부분만))
+====================================================================================================
+  // 더블클릭(file://)으로 열면 별도 작업 스레드를 못 쓰므로 같은 화면에서 PDF를 읽고,
+  // start.bat(http://127.0.0.1)으로 열면 작업 스레드에서 읽어 화면이 멈추지 않게 함
+  if (location.protocol === "file:") document.write('<script src="lib/pdf.worker.min.js"><\/script>');
+  else pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+// ---------- CSV 파싱 (따옴표 안의 쉼표·줄바꿈 처리) ----------
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') inQuotes = false;
+      else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); field = "";
+      if (row.some(v => v !== "")) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  const [header, ...body] = rows;
+  return body.map(r => Object.fromEntries(header.map((h, i) => [h, (r[i] ?? "").trim()])));
+}
+
+const DB = Object.fromEntries(Object.entries(window.CSV_DATA).map(([k, v]) => [k, parseCSV(v)]));
+
+// ---------- 업무 규칙 ----------
+const TODAY = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD (로컬 기준)
+
+// 판매상태: 판매중 = sale_start <= 오늘 AND (sale_end 빈값 OR sale_end >= 오늘)
+function saleStatus(p, today = TODAY) {
+  if (p.sale_start > today) return "판매예정";
+  if (!p.sale_end || p.sale_end >= today) return "판매중";
+  return "판매종료";
+}
+
+// 기간검색: sale_start <= To AND (sale_end 빈값 OR sale_end >= From)  — 빈 입력은 제한 없음
+function inPeriod(p, from, to) {
+  if (to && p.sale_start > to) return false;
+  if (from && p.sale_end && p.sale_end < from) return false;
+  return true;
+}
+
+const norm = s => (s || "").replace(/\s+/g, "").toLowerCase();
+
+// 상품별 검색 대상 텍스트(공백 제거): 상품명·주요특징·담보명·지급사유·문서제목·문서본문
+const searchIndex = DB.products.map(p => {
+  const covs = DB.coverages.filter(c => c.product_code === p.product_code);
+  const docs = DB.documents.filter(d => d.product_code === p.product_code);
+  return {
+    product: p,
+    name: norm(p.product_name),
+    all: norm([p.product_name, p.key_features,
+      ...covs.flatMap(c => [c.coverage_name, c.payment_reason]),
+      ...docs.flatMap(d => [d.title, d.content])].join(" "))
+  };
+});
+
+// 상품분류 드롭다운: 괄호 앞 대분류 기준 (예: "건강(간편심사)" → "건강"), 필터는 포함 일치
+const mainCategory = c => c.split("(")[0];
+
+function search({ keyword, from, to, category, status }, features = []) {
+  // 여러 단어는 공백으로 분리 → 각 단어도 공백 제거 → 모두 포함(AND)
+  const terms = keyword.trim().split(/\s+/).map(norm).filter(Boolean);
+  return searchIndex
+    .filter(x => terms.every(t => x.all.includes(t)))
+    .filter(x => features.every(f => featureMatches(f, x.all)))
+    .filter(x => inPeriod(x.product, from, to))
+    .filter(x => !category || x.product.category.includes(category))
+    .filter(x => !status || saleStatus(x.product) === status)
+    .map(x => ({ ...x, nameHit: terms.length > 0 && terms.every(t => x.name.includes(t)) }))
+    // 정렬: 상품명 일치 우선 → 판매개시일 최신순
+    .sort((a, b) => (b.nameHit - a.nameHit) || b.product.sale_start.localeCompare(a.product.sale_start));
+}
+
+// ---------- 화면 ----------
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+function highlight(text, terms) {
+  let html = esc(text);
+  for (const t of terms) {
+    if (!t) continue;
+    const re = new RegExp(t.split("").map(ch => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s*"), "gi");
+    html = html.replace(re, m => `<mark>${m}</mark>`);
+  }
+  return html;
+}
+
+function readForm() {
+  return { keyword: $("keyword").value, from: $("from").value, to: $("to").value,
+           category: $("category").value, status: $("status").value, docType: $("docType").value };
+}
+
+function render() {
+  const cur = currentQuery();
+  const q = cur.form;
+  const terms = q.keyword.trim().split(/\s+/).map(norm).filter(Boolean);
+  const rows = search(q, cur.mode === "question" ? cur.Q.features : []); // 문장 질문은 기초서류 원문에서만 찾음
+  $("summary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 전체 ${DB.products.length}건`;
+  if (!rows.length) {
+    $("results").innerHTML = `<tr><td colspan="6" class="empty">조건에 맞는 상품이 없습니다.</td></tr>`;
+    return;
+  }
+  $("results").innerHTML = rows.map(({ product: p, nameHit }) => {
+    const st = saleStatus(p);
+    const cls = st === "판매중" ? "on" : st === "판매종료" ? "off" : "plan";
+    const hitNote = terms.length && !nameHit ? `<div class="hit">담보·특징·문서에서 일치</div>` : "";
+    return `<tr data-code="${esc(p.product_code)}">
+      <td class="code">${esc(p.product_code)}</td>
+      <td>${highlight(p.product_name, terms)}${hitNote}</td>
+      <td>${esc(p.category)}</td>
+      <td>${esc(p.sale_start)} ~ ${esc(p.sale_end || "")}</td>
+      <td><span class="badge ${cls}">${st}</span></td>
+      <td class="num">${esc(p.revision_no)}차</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderAll() {
+  renderInterpretation();
+  render();
+  renderDocs();
+  renderAnswer();
+  renderCatalog();
+}
+
+$("today").textContent = TODAY;
+[...new Set(DB.products.map(p => mainCategory(p.category)))].forEach(c => {
+  $("category").insertAdjacentHTML("beforeend", `<option value="${esc(c)}">${esc(c)}</option>`);
+});
+$("searchForm").addEventListener("submit", e => { e.preventDefault(); renderAll(); });
+["from", "to", "category", "status"].forEach(id => $(id).addEventListener("change", renderAll));
+$("resetBtn").addEventListener("click", () => { $("searchForm").reset(); renderAll(); });
+// 상세 카드는 다음 단계에서 추가 예정 (행 클릭 시 data-code 사용)
+renderAll();
+
+====================================================================================================
+# FILE: pdf-docs.js  (기초서류 PDF 읽기 · 판매일자·판매상태 · 문서 검색)
+====================================================================================================
+// 기초서류 PDF 폴더 연결 — 선택한 폴더의 PDF 본문을 브라우저(PC) 안에서 읽어 검색에 포함
+// 파일은 업로드·저장하지 않고 메모리에만 둡니다. (index.html의 norm, esc, $, readForm, TODAY 사용)
+
+// ---------- pdf.js 설정: 서버 없이(file://) 동작하도록 내장 한글 CMap 사용 ----------
+class EmbeddedCMapReaderFactory {
+  constructor() {}
+  async fetch({ name }) {
+    const b64 = window.PDF_CMAPS_KO && window.PDF_CMAPS_KO[name];
+    if (!b64) throw new Error(`CMap 없음: ${name}`);
+    const bin = atob(b64);
+    const data = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+    return { cMapData: data, compressionType: 1 }; // 1 = BINARY(bcmap)
+  }
+}
+
+const DOCS = []; // { file, path, name, docType, productName, productKey, start, end, pages: [text], error }
+
+// ---------- 경로·파일명 해석 ----------
+const DOC_TYPES = ["사업방법서", "산출방법서", "상품요약서", "약관"];
+const docTypeOf = name => DOC_TYPES.find(t => name.includes(t)) || "기타";
+
+const pad = n => String(n).padStart(2, "0");
+function validDate(y, m, d) {
+  y = +y; m = +m; d = +(d || 1);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return `${y}-${pad(m)}-${pad(d)}`;
+}
+
+// 문자열에서 날짜를 모두 찾기: 2023.01.01 / 2023-1-1 / 2023년 1월 1일 / 20230101 / 230101 / 2023.01 / 202301
+function findDates(str) {
+  const found = [];
+  const patterns = [
+    [/(?<!\d)((?:19|20)\d{2})\s*[.\-_/년]\s*(\d{1,2})\s*(?:[.\-_/월]\s*(\d{1,2})\s*일?)?(?!\d)/g, m => validDate(m[1], m[2], m[3])],
+    [/(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)/g, m => validDate(m[1], m[2], m[3])],
+    [/(?<!\d)(\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)/g, m => validDate("20" + m[1], m[2], m[3])],
+    [/(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])(?!\d)/g, m => validDate(m[1], m[2])],
+  ];
+  for (const [re, toDate] of patterns) {
+    for (const m of str.matchAll(re)) {
+      const date = toDate(m);
+      const s = m.index, e = m.index + m[0].length;
+      if (date && !found.some(f => s < f.e && e > f.s)) found.push({ s, e, date, text: m[0] });
+    }
+  }
+  return found.sort((a, b) => a.s - b.s);
+}
+
+// 판매일자: 가장 안쪽 폴더명부터 찾고, 없으면 파일명에서 찾음. 한 이름에 날짜가 2개면 시작~종료로 봄
+// 판매여부 폴더: 경로의 폴더 이름에 "판매중지·판매종료·판매중단·중지상품"이 있으면 판매중지, "판매중·판매상품"이 있으면 판매중
+// 예) 판매중/2026/2026.04.01/(무)OO보험/…pdf, 판매중지상품/2014/…  (파일명은 보지 않음)
+function saleFolderOf(path) {
+  const folders = path.split("/").slice(0, -1).map(norm);
+  if (folders.some(f => /판매중지|판매종료|판매중단|중지상품|판매안함/.test(f))) return "stop";
+  if (folders.some(f => /판매중|판매상품|현재판매/.test(f))) return "on";
+  return "";
+}
+
+// 문서의 판매상태: 판매여부 폴더가 있으면 그 기준, 없으면 판매일자로 추정
+// (판매중 폴더라도 같은 상품의 더 최근 판매일자가 있으면 이전 판매일자는 판매종료)
+function docSaleStatus(d) {
+  if (d.saleFolder === "stop") return "판매종료";
+  if (!d.start) return d.saleFolder === "on" ? "판매중" : "미상";
+  if (d.start > TODAY) return "판매예정";
+  return !d.end || d.end >= TODAY ? "판매중" : "판매종료";
+}
+
+function saleDatesOf(path) {
+  const parts = path.split("/");
+  const candidates = [...parts.slice(0, -1).reverse(), parts[parts.length - 1]];
+  for (const seg of candidates) {
+    const ds = findDates(seg);
+    if (ds.length) return { start: ds[0].date, end: ds.length > 1 ? ds[1].date : "", explicitEnd: ds.length > 1 };
+  }
+  return { start: "", end: "", explicitEnd: false };
+}
+
+// 상품명 추정: 파일명에서 확장자·문서유형·날짜·구분기호를 뺀 나머지
+// 문서유형을 뜻하는 말 (긴 말부터 지워야 "보험약관"에서 "보험"만 남지 않음)
+const DOC_WORDS = ["보험약관", "보통약관", "특별약관", "기본약관", "특약약관", ...DOC_TYPES];
+
+function productNameOf(fileName) {
+  let s = fileName.replace(/\.pdf$/i, "");
+  // "[보험약관] (무)…", "【사업방법서】…" 같은 대괄호 머리표 제거 (상품명의 둥근 괄호 "(무)"는 유지)
+  s = s.replace(/[\[【〔［][^\]】〕］]*[\]】〕］]/g, " ");
+  for (const d of findDates(s).reverse()) s = s.slice(0, d.s) + " " + s.slice(d.e);
+  for (const t of DOC_WORDS) s = s.split(t).join(" ");
+  // "(계약자용)", "_계약자용" 등은 같은 상품으로 봄 → 상품명에서 제외
+  s = s.replace(/[(（]\s*계약자\s*용\s*[)）]|계약자\s*용/g, " ");
+  s = s.replace(/(보통|특별)\s*$/, "").replace(/[_\-\s~]+/g, " ").trim();
+  return s;
+}
+
+// 같은 상품으로 묶는 키: 공백 무시, "무배당 ○○"과 "(무)○○"은 같은 상품
+const productKeyFrom = name => norm(name).replace(/^무배당/, "(무)");
+
+function dayBefore(iso) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() - 1);
+  return d.toLocaleDateString("sv-SE");
+}
+
+// 같은 상품(추정 상품명 동일)의 다음 판매일자 하루 전을 판매종료일로 추정
+function inferEndDates() {
+  const groups = {};
+  DOCS.filter(d => d.start && !d.explicitEnd).forEach(d => (groups[d.productKey] ||= []).push(d));
+  for (const list of Object.values(groups)) {
+    const starts = [...new Set(list.map(d => d.start))].sort();
+    list.forEach(d => {
+      const next = starts.find(s => s > d.start);
+      d.end = next ? dayBefore(next) : "";
+    });
+  }
+}
+
+// ---------- PDF 텍스트 추출 ----------
+async function extractPages(data) {
+  const pdf = await pdfjsLib.getDocument({ data, CMapReaderFactory: EmbeddedCMapReaderFactory, cMapPacked: true }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    // 글자 위치(y)가 바뀌면 줄바꿈 → 원문 줄 단위로 근거를 보여줄 수 있게 함
+    let text = "", lastY = null;
+    for (const it of tc.items) {
+      const y = it.transform ? it.transform[5] : null;
+      if (lastY !== null && y !== null && Math.abs(y - lastY) > 2 && !text.endsWith("\n")) text += "\n";
+      text += it.str + (it.hasEOL ? "\n" : "");
+      if (y !== null && it.str) lastY = y;
+    }
+    pages.push(text);
+    page.cleanup();
+  }
+  await pdf.destroy();
+  return pages;
+}
+
+// 파일명에 상품명이 없으면(코드·번호뿐) 바로 위 폴더명을 상품명으로 씀
+// 예) 공시실 다운로드 도구 구조: 2026/2026.04.01/(무)OO보험/[보험약관] 원본파일명.pdf
+function productNameFromPath(path) {
+  const parts = path.split("/");
+  const fromFile = productNameOf(parts[parts.length - 1]);
+  if (/[가-힣]{2,}/.test(fromFile) || parts.length < 2) return fromFile;
+  const folder = parts[parts.length - 2];
+  return findDates(folder).length || !/[가-힣]{2,}/.test(folder) ? fromFile : productNameOf(folder);
+}
+
+function makeDoc(path, extra) {
+  const name = path.split("/").pop();
+  const productName = productNameFromPath(path);
+  return { path, name, docType: docTypeOf(name), productName, productKey: productKeyFrom(productName),
+           ...saleDatesOf(path), saleFolder: saleFolderOf(path), pages: [], error: "", ...extra };
+}
+
+async function readPages(doc, getBytes) {
+  try {
+    doc.pages = await extractPages(await getBytes());
+    if (!doc.pages.join("").trim()) doc.error = "본문 텍스트 없음 (스캔 이미지 PDF일 수 있음)";
+  } catch (e) {
+    doc.error = "읽기 실패: " + (e && e.message ? e.message : e);
+  }
+}
+
+// 판매중 → 판매중지로 바뀐 상품이 두 폴더에 모두 있으면(같은 상품·판매일자·문서유형) 판매중지 쪽만 남김
+let movedDupCount = 0;
+function dropMovedDuplicates() {
+  const stopKeys = new Set(DOCS.filter(d => d.saleFolder === "stop").map(d => [d.productKey, d.start, d.docType].join("|")));
+  const before = DOCS.length;
+  for (let i = DOCS.length - 1; i >= 0; i--) {
+    const d = DOCS[i];
+    if (d.saleFolder === "on" && stopKeys.has([d.productKey, d.start, d.docType].join("|"))) DOCS.splice(i, 1);
+  }
+  movedDupCount += before - DOCS.length;
+  return movedDupCount;
+}
+
+function finishLoading(label) {
+  const dup = dropMovedDuplicates();
+  if (dup) label += ` (판매중지로 옮겨진 중복 ${dup}개 제외)`;
+  if (!SERVER_MODE) DOCS.forEach(d => { d.searchText = norm(d.path + " " + d.pages.join(" ")); });
+  inferEndDates();
+  $("docsBar").style.width = "100%";
+  setTimeout(() => { $("docsProgress").hidden = true; }, 600);
+  const failed = DOCS.filter(d => d.error).length, noDate = DOCS.filter(d => !d.start).length;
+  $("docsDot").classList.toggle("ok", DOCS.length > 0);
+  $("docsStatus").textContent = `${label} — PDF ${DOCS.length}개` +
+    (failed ? ` (본문 못 읽음 ${failed}개)` : "") + (noDate ? ` · 판매일자 인식 못함 ${noDate}개` : "");
+  renderAll();
+}
+
+function resetDocs() {
+  movedDupCount = 0;
+  DOCS.forEach(d => d.url && d.url.startsWith("blob:") && URL.revokeObjectURL(d.url));
+  DOCS.length = 0;
+}
+
+const progress = (i, n, path) => {
+  $("docsProgress").hidden = false;
+  $("docsStatus").textContent = `읽는 중 ${i + 1}/${n} — ${path}`;
+  $("docsBar").style.width = `${(i / n) * 100}%`;
+};
+
+// 방법 1) [폴더 선택] — 파일을 매번 다시 선택 (index.html을 더블클릭해서 연 경우)
+async function loadFolder(fileList) {
+  const files = [...fileList].filter(f => /\.pdf$/i.test(f.name));
+  resetDocs();
+  if (!files.length) {
+    $("docsStatus").textContent = "선택한 폴더에 PDF 파일이 없습니다.";
+    renderAll();
+    return;
+  }
+  const root = (files[0].webkitRelativePath || files[0].name).split("/")[0];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const doc = makeDoc(file.webkitRelativePath || file.name, { file });
+    progress(i, files.length, doc.path);
+    await readPages(doc, async () => new Uint8Array(await file.arrayBuffer()));
+    DOCS.push(doc);
+  }
+  finishLoading(`연결됨: ${root}`);
+}
+
+// 방법 2) 자동 연결 — start.bat(serve.py)로 연 경우. 지정 폴더 목록을 받아 오고,
+// 색인이 안 된 PDF만 브라우저가 읽어서 내 PC의 검색 색인(.docs-cache/index.db)에 저장
+// 웹 데모(교육자료 링크 등 내 PC가 아닌 주소로 연 경우): 서버 없이 가상 샘플 PDF를 브라우저에서 바로 읽음
+const DEMO_MODE = location.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+const SERVER_MODE = location.protocol.startsWith("http") && !DEMO_MODE;
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? { cache: "no-store" }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+  return data;
+}
+
+// 서버 모드에서는 본문을 필요할 때만 가져옴 (상품 분석·AI 프롬프트용)
+async function ensurePages(docs) {
+  if (!SERVER_MODE) return;
+  for (const d of docs) {
+    if (d.pagesLoaded || !d.id) continue;
+    d.pages = (await api(`api/pages?id=${d.id}`)).pages;
+    d.pagesLoaded = true;
+    d._lines = null;
+    d._sections = null;
+  }
+}
+
+let indexing = false;
+
+async function loadFromServer() {
+  if (indexing) return;
+  const { root, folder, files } = await api("api/docs");
+  resetDocs();
+  $("docsFolder").textContent = folder;
+  for (const f of files) {
+    const url = "docs/" + f.path.split("/").map(encodeURIComponent).join("/");
+    DOCS.push(makeDoc(f.path, { url, id: f.id, size: f.size, mtime: f.mtime, indexed: f.indexed,
+                                error: f.error || "", features: f.features || {} }));
+  }
+  const todo = DOCS.filter(d => !d.indexed);
+  finishLoading(`자동 연결: ${root}`);
+  if (!todo.length) return;
+  // 새 파일·수정된 파일만 읽어서 색인 (중간에 창을 닫아도 다음에 이어서 진행)
+  indexing = true;
+  $("reloadDocsBtn").disabled = true;
+  const t0 = Date.now();
+  try {
+    for (let i = 0; i < todo.length; i++) {
+      const d = todo[i];
+      progress(i, todo.length, d.path);
+      if (i > 2) {
+        const left = Math.round((Date.now() - t0) / i * (todo.length - i) / 60000);
+        $("docsStatus").textContent += ` · 남은 시간 약 ${left}분`;
+      }
+      await readPages(d, async () => new Uint8Array(await (await fetch(d.url)).arrayBuffer()));
+      const r = await api("api/index", { path: d.path, size: d.size, mtime: d.mtime, pages: d.pages, error: d.error });
+      Object.assign(d, { id: r.id, features: r.features, indexed: true, pages: [], pagesLoaded: false });
+      if (i % 25 === 24) renderAll(); // 색인된 문서부터 바로 검색 가능
+    }
+  } finally {
+    indexing = false;
+    $("reloadDocsBtn").disabled = false;
+  }
+  finishLoading(`자동 연결: ${root} (새로 색인 ${todo.length}개)`);
+}
+
+if (SERVER_MODE) {
+  $("serverMode").hidden = false;
+  $("noFolder").hidden = true;
+  $("reloadDocsBtn").hidden = false;
+  $("docsNote").textContent = "start.bat으로 실행 중 — 지정 폴더를 자동으로 읽어 내 PC의 검색 색인(앱 폴더 .docs-cache)에 저장합니다. " +
+    "다음 실행부터는 새로 추가·수정된 파일만 읽습니다. 외부로는 아무것도 전송되지 않습니다.";
+  const run = () => loadFromServer().catch(err => {
+    indexing = false;
+    $("docsStatus").textContent = /fetch|network/i.test(err.message)
+      ? "자동 연결 실패: 앱 프로그램(start.bat 검은 창)에 연결하지 못했습니다. 검은 창이 닫혔거나 오류로 멈췄는지 확인하고, start.bat을 다시 실행하세요."
+      : "자동 연결 실패: " + err.message;
+  });
+  $("reloadDocsBtn").addEventListener("click", run);
+  run();
+}
+
+// 방법 3) 웹 데모 — 앱과 함께 올린 가상 샘플(sample-기초서류폴더)을 읽음. 외부로 보내는 것은 없음
+async function loadDemo() {
+  const list = window.SAMPLE_FILES || [];
+  resetDocs();
+  for (let i = 0; i < list.length; i++) {
+    const url = list[i].split("/").map(encodeURIComponent).join("/");
+    const doc = makeDoc(list[i], { url });
+    progress(i, list.length, doc.path);
+    await readPages(doc, async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return new Uint8Array(await res.arrayBuffer());
+    });
+    DOCS.push(doc);
+  }
+  finishLoading("웹 데모: 가상 샘플(가나다생명)");
+}
+
+if (DEMO_MODE) {
+  $("noFolder").textContent = "가상 샘플 (웹 데모)";
+  $("docsNote").textContent = "웹 데모 — 교육용 가상 샘플 PDF를 브라우저에서 바로 읽습니다. 내 PC의 기초서류 폴더 연결은 start.bat으로 실행한 앱에서 합니다.";
+  loadDemo().catch(err => { $("docsStatus").textContent = "샘플 읽기 실패: " + err.message; });
+}
+
+// ---------- 검색 ----------
+// 판매기간·분류·판매상태 조건 (키워드 검색과 질문 검색이 함께 사용)
+const MAIN_DOC_TYPES = ["사업방법서", "상품요약서", "약관"];
+function docMatchesFilters(d, { from, to, category, status, docType }) {
+  if (docType && (docType === "기타" ? MAIN_DOC_TYPES.includes(d.docType) : d.docType !== docType)) return false;
+  // 판매기간 겹침: 판매개시일 <= To AND (종료일 빈값 OR 종료일 >= From). 판매일자를 모르면 기간 검색에서 제외
+  if ((from || to) && !(d.start && (!to || d.start <= to) && (!from || !d.end || d.end >= from))) return false;
+  if (category && !d.path.includes(category)) return false;
+  if (status && docSaleStatus(d) !== status) return false;
+  return true;
+}
+
+// 공백 제거 문자열에서 찾은 위치를 원문 위치로 되돌려 앞뒤 문맥을 잘라냄
+function snippets(pageText, terms, max) {
+  const map = [];
+  let compact = "";
+  for (let i = 0; i < pageText.length; i++) {
+    if (!/\s/.test(pageText[i])) { compact += pageText[i].toLowerCase(); map.push(i); }
+  }
+  const out = [];
+  for (const t of terms) { // 페이지당 단어별 첫 위치만
+    const idx = compact.indexOf(t);
+    if (out.length >= max || idx === -1) continue;
+    const s = map[idx], e = map[idx + t.length - 1] + 1;
+    const a = Math.max(0, s - 40), b = Math.min(pageText.length, e + 40);
+    out.push({ before: pageText.slice(a, s), hit: pageText.slice(s, e), after: pageText.slice(e, b), lead: a > 0, tail: b < pageText.length });
+  }
+  return out;
+}
+
+const sortDocs = (rows) => rows
+  // 정렬: 파일명(상품명) 일치 우선 → 판매개시일 최신순
+  .sort((a, b) => (b.nameHit - a.nameHit) || (b.doc.start || "").localeCompare(a.doc.start || ""));
+
+async function searchDocs(q) {
+  const terms = q.keyword.trim().split(/\s+/).map(norm).filter(Boolean);
+  let docs = DOCS.filter(d => docMatchesFilters(d, q));
+  if (terms.length) {
+    if (SERVER_MODE) {
+      const ids = new Set((await api("api/search", { terms })).ids);
+      docs = docs.filter(d => ids.has(d.id));
+    } else {
+      docs = docs.filter(d => terms.every(t => d.searchText.includes(t)));
+    }
+  }
+  return sortDocs(docs.map(d => ({ doc: d, terms, nameHit: terms.length > 0 && terms.every(t => norm(d.name).includes(t)) })));
+}
+
+// 일치 문장: 파일 모드는 메모리 본문에서, 서버 모드는 색인에서 (화면에 보이는 문서만)
+async function snippetsFor(docs, terms) {
+  const out = new Map();
+  if (!terms.length) return out;
+  if (SERVER_MODE) {
+    const ids = docs.filter(d => d.id).map(d => d.id);
+    const res = ids.length ? (await api("api/snippets", { ids, terms })).snippets : {};
+    docs.forEach(d => out.set(d, res[d.id] || []));
+  } else {
+    docs.forEach(d => {
+      const list = [];
+      d.pages.forEach((text, pi) => {
+        if (list.length >= 3) return;
+        snippets(text, terms, 3 - list.length).forEach(s => list.push({ ...s, page: pi + 1 }));
+      });
+      out.set(d, list);
+    });
+  }
+  return out;
+}
+
+let docsRenderSeq = 0;
+let docsPage = 1;
+const docsPageSize = () => +$("docsPageSize").value || 20;
+
+// keepPage: 쪽 이동·한 페이지 건수 변경일 때 true (새 검색이면 1쪽부터)
+async function renderDocs(keepPage = false) {
+  const seq = ++docsRenderSeq; // 빠르게 다시 검색하면 이전 결과는 버림
+  if (!keepPage) docsPage = 1;
+  const cur = currentQuery();
+  // 질문(특징·문장) 검색일 때는 문서 목록 대신 '상품별 답변' 패널을 보여줌
+  // 검색어·조건이 하나도 없으면 문서 목록 대신 상품 목록이 메인
+  const f = cur.form, idle = !f.keyword.trim() && !f.from && !f.to && !f.category && !f.status && !f.docType;
+  if (!DOCS.length || cur.mode !== "keyword" || idle) { $("docsPanel").hidden = true; return; }
+  $("docsPanel").hidden = false;
+  let rows, snips, pageRows;
+  const size = docsPageSize();
+  try {
+    rows = await searchDocs(cur.form);
+    const pages = Math.max(1, Math.ceil(rows.length / size));
+    docsPage = Math.min(Math.max(1, docsPage), pages);
+    pageRows = rows.slice((docsPage - 1) * size, docsPage * size);
+    // 일치 문장은 지금 쪽에 보이는 문서만 가져옴
+    snips = await snippetsFor(pageRows.map(r => r.doc), rows.length ? rows[0].terms : []);
+  } catch (e) {
+    if (seq === docsRenderSeq) $("docsSummary").textContent = "검색 실패: " + e.message;
+    return;
+  }
+  if (seq !== docsRenderSeq) return;
+  const notIndexed = DOCS.filter(d => SERVER_MODE && !d.indexed).length;
+  const from = rows.length ? (docsPage - 1) * size + 1 : 0, to = (docsPage - 1) * size + pageRows.length;
+  $("docsSummary").innerHTML = `검색 결과 <b>${rows.length}</b>건 / 불러온 PDF ${DOCS.length}건` +
+    (rows.length > size ? ` · ${from}~${to}번째 표시` : "") +
+    (notIndexed && cur.form.keyword.trim() ? ` · 색인 중인 ${notIndexed}건은 아직 검색되지 않음` : "");
+  renderPager(rows.length, size);
+  if (!rows.length) {
+    $("docsResults").innerHTML = `<tr><td colspan="5" class="empty">조건에 맞는 문서가 없습니다.</td></tr>`;
+    return;
+  }
+  $("docsResults").innerHTML = pageRows.map(({ doc: d, terms }) => {
+    let snipHtml = "", firstPage = 1;
+    if (terms.length) {
+      const list = snips.get(d) || [];
+      if (list.length) firstPage = list[0].page;
+      snipHtml = list.map(s => `<p class="snip"><span class="pg">p.${s.page}</span>${s.lead ? "…" : ""}${esc(s.before)}<mark>${esc(s.hit)}</mark>${esc(s.after)}${s.tail ? "…" : ""}</p>`).join("")
+        || `<p class="snip note">파일 경로에서 일치</p>`;
+    }
+    if (d.error) snipHtml += `<p class="warn">${esc(d.error)}</p>`;
+    const period = d.start ? `${esc(d.start)}<div class="path">~ ${esc(d.end || "")}${d.end && !d.explicitEnd ? " (추정)" : ""}</div>` : `<span class="warn">인식 못함</span>`;
+    return `<tr>
+      <td>${period}</td>
+      <td>${esc(d.docType)}</td>
+      <td>${esc(d.productName || d.name)}<div class="path">${esc(d.path)}</div></td>
+      <td>${snipHtml}</td>
+      <td class="actions"><button type="button" data-open="${DOCS.indexOf(d)}" data-page="${firstPage}">열기</button>
+        <button type="button" data-analyze="${esc(productKeyOf(d))}" data-start="${esc(d.start)}">분석</button></td>
+    </tr>`;
+  }).join("");
+}
+
+// 쪽 번호: « ‹ 1 2 3 … › » (현재 쪽 앞뒤로 최대 10개)
+function renderPager(total, size) {
+  const pages = Math.ceil(total / size);
+  if (pages <= 1) { $("docsPager").innerHTML = ""; return; }
+  const startP = Math.max(1, Math.min(docsPage - 4, pages - 9)), endP = Math.min(pages, startP + 9);
+  const btn = (p, label, title) => `<button type="button" data-docs-page="${p}"${p === docsPage && label === String(p) ? ' class="on" aria-current="page"' : ""}${p < 1 || p > pages ? " disabled" : ""} title="${title || p + "쪽"}">${label}</button>`;
+  let html = btn(1, "«", "처음") + btn(docsPage - 1, "‹", "이전 쪽");
+  for (let p = startP; p <= endP; p++) html += btn(p, String(p));
+  html += btn(docsPage + 1, "›", "다음 쪽") + btn(pages, "»", "마지막") + `<span class="pinfo">${docsPage} / ${pages}쪽</span>`;
+  $("docsPager").innerHTML = html;
+}
+$("docsPager").addEventListener("click", e => {
+  const b = e.target.closest("button[data-docs-page]");
+  if (!b || b.disabled) return;
+  docsPage = +b.dataset.docsPage;
+  renderDocs(true).then(() => $("docsPanel").scrollIntoView({ block: "start" }));
+});
+$("docsPageSize").addEventListener("change", () => { docsPage = 1; renderDocs(true); });
+
+// 상품·판매일자의 기초서류 원문 링크 (사업방법서 / 상품요약서 / 약관 순, 같은 유형이 여럿이면 번호)
+function docLinksHtml(docs, cls = "doclinks") {
+  const parts = [];
+  for (const t of MAIN_DOC_TYPES) {
+    const list = docs.filter(d => d.docType === t);
+    if (!list.length) { parts.push(`<span class="miss">${t} 없음</span>`); continue; }
+    parts.push(list.map((d, i) => `<a href="#" data-open="${DOCS.indexOf(d)}" data-page="1" title="${esc(d.path)}">${t}${list.length > 1 ? ` (${i + 1})` : ""}</a>`).join(" "));
+  }
+  docs.filter(d => !MAIN_DOC_TYPES.includes(d.docType))
+    .forEach(d => parts.push(`<a href="#" data-open="${DOCS.indexOf(d)}" data-page="1" title="${esc(d.path)}">${esc(d.docType === "기타" ? d.name : d.docType)}</a>`));
+  return `<span class="${cls}">${parts.join("")}</span>`;
+}
+
+// 같은 상품으로 묶는 키 (파일명에서 상품명을 못 뽑으면 파일명 전체)
+const productKeyOf = d => d.productKey || norm(d.name);
+
+// PDF 열기: 메모리의 파일을 새 탭으로 (일치한 페이지로 이동). 결과·답변·분석 화면 공통
+function openDoc(index, page) {
+  const d = DOCS[index];
+  if (DEMO_MODE) { showDocPage(d, +page || 1); return; } // 웹 데모는 새 창을 못 열어 화면 안에 그 쪽을 그림으로 보여 줌
+  d.url ||= URL.createObjectURL(d.file); // 서버 모드는 처음부터 docs/... 주소가 있음
+  window.open(`${d.url}#page=${page || 1}`, "_blank");
+}
+document.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-open], a[data-open]");
+  if (!btn) return;
+  e.preventDefault();
+  openDoc(+btn.dataset.open, btn.dataset.page);
+});
+
+$("folderInput").addEventListener("change", e => {
+  loadFolder(e.target.files).catch(err => { $("docsStatus").textContent = "폴더 읽기 실패: " + err.message; });
+  e.target.value = "";
+});
+
+====================================================================================================
+# FILE: question.js  (질문 해석 · 특징 질문 · 문장 질문 검색)
+====================================================================================================
+// 질문 검색 — "제1보기와 제2보기가 구분된 종신보험이 뭐였지?" 같은 문장을 특징·조건으로 해석해 상품을 찾음
+// 오프라인 규칙 기반: 특징 사전(dummy-data/features.csv)과 분류·판매상태·연도 표현을 대조합니다.
+// 특징 사전에 없는 질문은 '문장 질문 검색': 질문에서 핵심어를 뽑아, 핵심어가 한 문장 안에 모여 있는 원문을 찾습니다.
+
+// ---------- 특징 사전 ----------
+const FEATURES = DB.features.map(r => ({
+  id: r.feature_id,
+  name: r.feature_name,
+  phrases: r.question_phrases.split(";").map(norm).filter(Boolean),
+  // 문서 패턴은 공백 제거 본문에 적용, 여러 개면 모두 있어야 일치
+  patterns: r.doc_patterns.split(";").filter(Boolean).map(p => new RegExp(p, "i")),
+}));
+
+const featureMatches = (f, compactText) => f.patterns.every(re => re.test(compactText));
+
+const CATEGORY_WORDS = [...new Set([
+  ...DB.products.map(p => mainCategory(p.category)),
+  "종신", "정기", "건강", "암", "연금", "저축", "간병", "실손", "변액", "유니버셜", "CI",
+])].map(c => ({ label: c, key: norm(c) })).sort((a, b) => b.key.length - a.key.length);
+
+// 해석에 쓰지 않는 말 (질문 끝맺음·조사 등) — 남은 말 표시에서만 제외
+const STOP_WORDS = ["보험료납입기간", "납입기간", "보험료", "나눠져있는", "나뉘어진", "나눠진", "으로", "과", "구분되어있는", "구분되어있던", "나뉘어있는", "구분된", "구분", "뭐였지", "뭐였더라", "뭐지", "무엇",
+  "어떤", "있는", "있던", "되어", "보험", "상품", "알려줘", "찾아줘", "였지", "인가", "였나", "이었지", "뭐",
+  "와", "과", "가", "이", "은", "는", "을", "를", "의", "에", "에서", "로", "도", "만", "요", "?", ".", "!", ","]
+  .map(norm).sort((a, b) => b.length - a.length);
+
+// ---------- 질문 해석 ----------
+const IGNORED = new Set(); // 사용자가 × 로 끈 해석 (질문이 바뀌면 초기화)
+let lastQuestion = "";
+
+// pure: 검색창과 관계없이 해석만 (AI 질문 화면용 — 검색창의 × 상태를 건드리지 않음)
+function interpretQuestion(text, pure = false) {
+  const raw = norm(text);
+  const IGN = pure ? new Set() : IGNORED;
+  if (!pure && raw !== lastQuestion) { IGNORED.clear(); lastQuestion = raw; }
+  const Q = { raw, features: [], category: "", status: "", from: "", to: "", chips: [], leftover: [] };
+  if (!raw) return Q;
+  const taken = [];
+  const free = (s, e) => !taken.some(([a, b]) => s < b && e > a);
+  const chip = (key, kind, label) => {
+    const ignored = IGN.has(key);
+    if (!Q.chips.some(c => c.key === key)) Q.chips.push({ key, kind, label, ignored });
+    return !ignored;
+  };
+
+  // 1) 특징: 긴 표현부터 먼저 차지 (예: '비갱신형'이 '갱신형'보다 우선)
+  const cands = [];
+  FEATURES.forEach(f => f.phrases.forEach(p => {
+    for (let i = raw.indexOf(p); i !== -1; i = raw.indexOf(p, i + 1)) cands.push({ f, s: i, e: i + p.length });
+  }));
+  cands.sort((a, b) => (b.e - b.s) - (a.e - a.s) || a.s - b.s);
+  for (const c of cands) {
+    if (!free(c.s, c.e)) continue;
+    taken.push([c.s, c.e]);
+    if (chip("f:" + c.f.id, "특징", c.f.name) && !Q.features.includes(c.f)) Q.features.push(c.f);
+  }
+
+  // 2) 판매상태
+  for (const [re, st] of [[/판매종료|판매중지|판매안하는|단종/, "판매종료"], [/판매중|현재판매|판매하는|판매되는/, "판매중"]]) {
+    const m = raw.match(re);
+    if (m && free(m.index, m.index + m[0].length)) {
+      taken.push([m.index, m.index + m[0].length]);
+      if (chip("status", "판매상태", st)) Q.status = st;
+      break;
+    }
+  }
+
+  // 3) 연도 (예: 2023년 → 2023-01-01 ~ 2023-12-31 판매기간)
+  const y = raw.match(/((?:19|20)\d{2})년/);
+  if (y && free(y.index, y.index + y[0].length)) {
+    taken.push([y.index, y.index + y[0].length]);
+    if (chip("year", "판매연도", y[1] + "년")) { Q.from = `${y[1]}-01-01`; Q.to = `${y[1]}-12-31`; }
+  }
+
+  // 4) 상품분류
+  for (const c of CATEGORY_WORDS) {
+    const i = raw.indexOf(c.key);
+    if (i !== -1 && free(i, i + c.key.length)) {
+      taken.push([i, i + c.key.length]);
+      if (chip("cat", "분류", c.label)) Q.category = c.label;
+      break;
+    }
+  }
+
+  // 5) 해석하지 못한 말 (참고 표시만, 검색에는 쓰지 않음)
+  let rest = raw.split("").map((ch, i) => (free(i, i + 1) ? ch : " ")).join("");
+  for (const w of STOP_WORDS) rest = rest.split(w).join(" ");
+  Q.leftover = rest.split(" ").filter(w => w.length >= 2);
+
+  // 6) 문장 질문 검색용 핵심어 (특징 사전과 관계없이 질문 문장 그대로)
+  const all = questionTerms(text);
+  Q.termChips = all.map(t => ({ key: "t:" + t, term: t, ignored: IGN.has("t:" + t) }));
+  Q.terms = Q.termChips.filter(c => !c.ignored).map(c => c.term);
+  Q.sentence = all.length >= 2 && (QUESTION_CUE.test(raw) || all.length >= 4);
+  return Q;
+}
+
+// ---------- 문장 질문 검색: 핵심어 뽑기 ----------
+const QUESTION_CUE = /뭐|무엇|어떤|어느|있어|있나|있을까|있는지|알려|찾아|인가|인지|궁금|\?|상품|경우/;
+// 말끝(조사·어미)을 떼어 낱말 줄기만 남김 — 긴 것부터, 두 글자 이상 남을 때만
+const ENDINGS = ["에서는", "으로는", "이었던", "하는데", "되는데", "합니까", "입니까", "인가요", "있나요",
+  "해주는", "해준", "에서", "에게", "으로", "로는", "부터", "까지", "보다", "처럼", "에는", "에도", "이나", "이랑", "하는", "되는", "해서",
+  "하여", "하고", "하면", "한다", "된다", "했던", "됐던", "였던", "해야", "되어", "돼서", "하지", "되지",
+  "해", "을", "를", "이", "가", "은", "는", "의", "에", "와", "과", "도", "만", "로", "한", "된", "할", "될", "시", "때", "인", "적"];
+const TERM_STOP = new Set(["상품", "보험", "보험상품", "뭐", "뭐가", "무엇", "어떤", "어느", "있어", "있나", "있는", "있을까", "있는지", "있었지",
+  "알려줘", "알려", "찾아줘", "찾아", "경우", "것", "거", "좀", "혹시", "해당", "관련", "대해", "대한", "내용", "무슨", "뭐야", "뭐였지",
+  "뭐였더라", "뭐지", "궁금", "궁금해", "알고", "싶어", "이런", "그런", "어디", "언제", "다른", "같은", "모든", "어떻게", "얼마", "있다", "없다",
+  "이것", "그것", "중에", "중", "및", "또는", "그리고", "회사", "우리", "지금", "현재",
+  "주는", "받는", "나오는", "해주는", "되는", "하는", "있고", "없는", "때"]);
+// 같은 뜻으로 함께 찾을 말 (질문 핵심어에 들어 있으면 바꿔 넣은 말도 찾음)
+const SYNONYMS = [["차감", "공제", "뺀", "제외"], ["기납입", "이미납입한", "납입한"], ["해지", "해약"], ["지급", "지불"], ["돌려", "환급"], ["줄어", "감소", "감액"]];
+
+function stemOf(w) {
+  for (let k = 0; k < 2; k++) {
+    const e = ENDINGS.find(x => w.endsWith(x) && w.length - x.length >= 2 && !(x === "해" && /[상재손피방이위]해$/.test(w)));
+    if (!e) break;
+    w = w.slice(0, -e.length);
+  }
+  return w;
+}
+
+function questionTerms(text) {
+  const out = [];
+  for (const tok of (text || "").toLowerCase().split(/[\s,?!.·~"'“”‘’()\[\]]+/)) {
+    const w = stemOf(tok);
+    if (w.length < 2 || TERM_STOP.has(w) || TERM_STOP.has(tok)) continue;
+    if (/^((19|20)\d{2})년?$/.test(w) || /^판매(중|종료|중지)/.test(w)) continue; // 연도·판매상태는 조건으로 처리
+    if (CATEGORY_WORDS.some(c => w === c.key || w === c.key + "보험" || w === c.key + "형")) continue; // 분류도 조건으로
+    if (!out.includes(w)) out.push(w);
+  }
+  return out;
+}
+
+// 핵심어 → 같은 뜻 말까지 포함한 후보 목록
+function termAlts(t) {
+  const alts = [t];
+  for (const g of SYNONYMS) for (const w of g) {
+    if (!t.includes(w)) continue;
+    g.filter(x => x !== w).forEach(x => { const a = t.replace(w, x); if (!alts.includes(a)) alts.push(a); });
+  }
+  return alts;
+}
+
+// 몇 개의 핵심어가 한 문장에 있어야 일치로 볼지 (2개 이하면 모두, 그 이상이면 3/4 이상)
+const termsNeeded = n => (n <= 2 ? n : Math.max(2, Math.ceil(n * 0.75)));
+
+// 원문을 문장 단위로 나눔 (마침표·물음표 뒤 공백, 아주 긴 덩어리는 줄바꿈·300자 단위로)
+function splitSentences(text) {
+  const out = [];
+  for (const piece of (text || "").split(/(?<=[.。!?])\s+/)) {
+    const parts = piece.length > 300 ? piece.split(/\n+/) : [piece];
+    for (const p of parts) for (let i = 0; i < p.length; i += 300) {
+      const t = p.slice(i, i + 300).trim();
+      if (t) out.push(t);
+    }
+  }
+  return out;
+}
+
+// 문장 하나 채점: 들어 있는 핵심어(같은 뜻 포함) 수
+function scoreSentence(sentence, groups) {
+  const comp = norm(sentence);
+  const matched = groups.map(g => g.find(a => comp.includes(a)) || "");
+  return { hits: matched.filter(Boolean).length, matched: matched.filter(Boolean), len: comp.length };
+}
+
+// 현재 검색창 → 키워드 검색 또는 질문 검색. 질문으로 인식된 특징이 하나라도 있으면 특징 질문 검색,
+// 특징은 없지만 문장으로 물어본 질문이면 문장 질문 검색 (둘 다 아래 '질문 답변'에 원문 문장을 함께 보여 줌)
+function currentQuery() {
+  const f = readForm();
+  const Q = interpretQuestion(f.keyword);
+  if (!Q.features.length && !Q.sentence) return { mode: "keyword", form: f, Q };
+  return {
+    mode: Q.features.length ? "question" : "sentence", Q,
+    form: { keyword: "", from: Q.from || f.from, to: Q.to || f.to,
+            category: Q.category || f.category, status: Q.status || f.status, docType: f.docType },
+  };
+}
+
+function renderInterpretation() {
+  const Q = interpretQuestion($("keyword").value);
+  const box = $("interp");
+  const hasFeat = Q.chips.some(c => c.kind === "특징");
+  if (!hasFeat && !Q.sentence) { box.hidden = true; return; }
+  box.hidden = false;
+  const chipHtml = (key, kind, label, ignored) =>
+    `<span class="chip${ignored ? " ignored" : ""}">${esc(kind)} <b>${esc(label)}</b>` +
+    `<button type="button" data-chip="${esc(key)}" title="${ignored ? "다시 사용" : "이 해석 빼기"}">${ignored ? "↺" : "×"}</button></span>`;
+  box.innerHTML = `질문 해석:` + Q.chips.map(c => chipHtml(c.key, c.kind, c.label, c.ignored)).join("") +
+    (Q.sentence ? ` <span>· 문장에서 찾을 핵심어:</span>` + Q.termChips.map(c => chipHtml(c.key, "핵심어", c.term, c.ignored)).join("")
+      : Q.leftover.length ? ` <span>· 참고하지 않은 말: ${esc(Q.leftover.join(", "))}</span>` : "");
+}
+
+$("interp").addEventListener("click", e => {
+  const b = e.target.closest("button[data-chip]");
+  if (!b) return;
+  IGNORED.has(b.dataset.chip) ? IGNORED.delete(b.dataset.chip) : IGNORED.add(b.dataset.chip);
+  renderAll();
+});
+
+// ---------- 상품별 답변 (기초서류 PDF) ----------
+// 공백을 무시하고 정규식으로 찾은 위치의 원문 앞뒤 문맥
+function regexSnippet(pageText, re) {
+  const map = [];
+  let compact = "";
+  for (let i = 0; i < pageText.length; i++) {
+    if (!/\s/.test(pageText[i])) { compact += pageText[i].toLowerCase(); map.push(i); }
+  }
+  const m = re.exec(compact);
+  if (!m || !m[0]) return null;
+  const s = map[m.index], e = map[m.index + m[0].length - 1] + 1;
+  const a = Math.max(0, s - 50), b = Math.min(pageText.length, e + 70);
+  return { before: pageText.slice(a, s), hit: pageText.slice(s, e), after: pageText.slice(e, b), lead: a > 0, tail: b < pageText.length };
+}
+
+// 문서가 특징을 가졌는지: 서버 모드는 색인 때 미리 계산한 태그, 파일 모드는 본문에서 바로 확인
+const docHasFeature = (d, f) => (SERVER_MODE ? !!(d.features && d.features[f.id]) : featureMatches(f, d.searchText));
+
+// 특징 근거 문맥 (패턴별 첫 페이지)
+function featureEvidence(d, f) {
+  if (SERVER_MODE) return (d.features && d.features[f.id]) || [];
+  return f.patterns.map(re => {
+    for (let i = 0; i < d.pages.length; i++) {
+      const s = regexSnippet(d.pages[i], re);
+      if (s) return { page: i + 1, ...s };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+const DOC_PRIORITY = ["사업방법서", "상품요약서", "약관", "산출방법서", "기타"];
+const byDocPriority = (a, b) => DOC_PRIORITY.indexOf(a.docType) - DOC_PRIORITY.indexOf(b.docType) || (b.start || "").localeCompare(a.start || "");
+
+function answerProducts(cur) {
+  const groups = new Map();
+  DOCS.filter(d => docMatchesFilters(d, cur.form)).forEach(d => {
+    const k = productKeyOf(d);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(d);
+  });
+  const out = [];
+  for (const [key, docs] of groups) {
+    const perFeature = cur.Q.features.map(f => ({ f, docs: docs.filter(d => docHasFeature(d, f)).sort(byDocPriority) }));
+    if (perFeature.some(x => !x.docs.length)) continue; // 모든 특징을 만족해야 함
+    const matchedDocs = [...new Set(perFeature.flatMap(x => x.docs))].sort(byDocPriority);
+    const latest = matchedDocs.map(d => d.start).filter(Boolean).sort().pop() || "";
+    out.push({ key, name: docs[0].productName || docs[0].name, perFeature, matchedDocs, latest });
+  }
+  return out.sort((a, b) => b.latest.localeCompare(a.latest));
+}
+
+function renderAnswer() {
+  const cur = currentQuery();
+  const panel = $("answerPanel");
+  if (cur.mode === "keyword") { panel.hidden = true; $("sentBox").hidden = true; return; }
+  panel.hidden = false;
+  renderSentenceAnswer(cur);
+  if (cur.mode === "sentence") { $("answerSummary").innerHTML = ""; $("answerCards").innerHTML = ""; return; }
+  const featNames = cur.Q.features.map(f => f.name).join(" + ");
+  if (!DOCS.length) {
+    $("answerSummary").innerHTML = `특징 <b>${esc(featNames)}</b> — 기초서류 PDF 폴더를 연결하면 문서 본문에서 찾아 답합니다. (아래 가상 상품 DB 결과 참고)`;
+    $("answerCards").innerHTML = "";
+    return;
+  }
+  const list = answerProducts(cur);
+  $("answerSummary").innerHTML = `특징 <b>${esc(featNames)}</b>에 해당하는 상품 <b>${list.length}</b>개 (불러온 PDF ${DOCS.length}건 기준)`;
+  if (!list.length) {
+    $("answerCards").innerHTML = `<p class="empty">조건에 맞는 상품을 문서에서 찾지 못했습니다. 위 해석에서 조건을 빼 보세요(×).</p>`;
+    return;
+  }
+  $("answerCards").innerHTML = list.map(p => {
+    const best = p.matchedDocs[0];
+    const evidence = p.perFeature.map(({ f, docs }) => {
+      const d = docs[0];
+      const shown = [];
+      const lines = featureEvidence(d, f).map(s => {
+        if (shown.some(t => t.page === s.page && t.text.includes(s.hit))) return ""; // 앞 문맥에 이미 보임
+        shown.push({ page: s.page, text: s.before + s.hit + s.after });
+        return `<p class="snip"><a href="#" class="pg" data-open="${DOCS.indexOf(d)}" data-page="${s.page}">${esc(d.docType)} p.${s.page}</a>` +
+          `${s.lead ? "…" : ""}${esc(s.before)}<mark>${esc(s.hit)}</mark>${esc(s.after)}${s.tail ? "…" : ""}</p>`;
+      }).join("");
+      return `<div><span class="tag">${esc(f.name)}</span>${lines}</div>`;
+    }).join("");
+    const versions = [...new Set(p.matchedDocs.map(d => d.start || "판매일자 미상"))].sort().reverse();
+    const docList = p.matchedDocs.map(d => `${d.docType}(${d.start || "?"})`).join(", ");
+    return `<div class="pcard">
+      <h3>${esc(p.name)}</h3>
+      <div class="meta">판매일자: ${esc(versions.join(", "))} · 근거 문서: ${esc(docList)}</div>
+      ${evidence}
+      <div class="buttons">
+        <button type="button" class="primary" data-analyze="${esc(p.key)}" data-start="${esc(best.start)}">상품 분석 보기</button>
+        <button type="button" data-compare-add="${esc(p.key)}" data-start="${esc(best.start)}">비교 담기</button>
+        <button type="button" data-open="${DOCS.indexOf(best)}" data-page="1">${esc(best.docType)} 열기</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// ---------- 문장 질문 검색: 핵심어가 한 문장에 모인 원문 찾기 ----------
+// 파일·웹 데모 모드는 메모리의 본문에서, 서버 모드는 색인(serve.py /api/ask)에서 찾습니다.
+async function sentenceAnswer(cur) {
+  const groups = cur.Q.terms.map(termAlts);
+  const need = termsNeeded(groups.length);
+  const docs = DOCS.filter(d => docMatchesFilters(d, cur.form));
+  const hits = []; // {doc, page, text, hits, matched, len}
+  if (!groups.length) return { groups, need, hits };
+  if (SERVER_MODE) {
+    const ids = docs.filter(d => d.id).map(d => d.id);
+    const byId = new Map(docs.map(d => [d.id, d]));
+    const res = ids.length ? (await api("api/ask", { groups, need, ids })).hits : [];
+    res.forEach(h => byId.has(h.id) && hits.push({ ...h, doc: byId.get(h.id) }));
+  } else {
+    for (const d of docs) {
+      const best = [];
+      (d.pages || []).forEach((text, pi) => splitSentences(text).forEach(sent => {
+        const sc = scoreSentence(sent, groups);
+        if (sc.hits >= need) best.push({ doc: d, page: pi + 1, text: sent, ...sc });
+      }));
+      best.sort((a, b) => b.hits - a.hits || a.len - b.len);
+      hits.push(...best.slice(0, 2));
+    }
+  }
+  return { groups, need, hits };
+}
+
+// 상품별로 묶기: 핵심어가 가장 많이 모인 문장 순, 같으면 짧은 문장·문서 우선순위·최신 판매일자
+function groupSentenceHits(hits) {
+  const byProduct = new Map();
+  hits.sort((a, b) => b.hits - a.hits || a.len - b.len || byDocPriority(a.doc, b.doc));
+  for (const h of hits) {
+    const k = productKeyOf(h.doc);
+    if (!byProduct.has(k)) byProduct.set(k, { key: k, name: h.doc.productName || h.doc.name, hits: [] });
+    byProduct.get(k).hits.push(h);
+  }
+  return [...byProduct.values()];
+}
+
+let sentSeq = 0;
+async function renderSentenceAnswer(cur) {
+  const box = $("sentBox"), seq = ++sentSeq;
+  if (!cur.Q.sentence) { box.hidden = true; return; }
+  box.hidden = false;
+  const termsTxt = cur.Q.terms.join(" · ");
+  if (!DOCS.length) {
+    box.innerHTML = `<h3>질문 문장으로 찾은 원문</h3><p class="summary">핵심어 <b>${esc(termsTxt)}</b> — 기초서류 PDF 폴더를 연결하면 원문에서 찾아 답합니다.</p>`;
+    return;
+  }
+  box.innerHTML = `<h3>질문 문장으로 찾은 원문</h3><p class="summary">찾는 중…</p>`;
+  let r;
+  try { r = await sentenceAnswer(cur); } catch (e) {
+    if (seq === sentSeq) box.innerHTML = `<h3>질문 문장으로 찾은 원문</h3><p class="warn">문장 검색 실패: ${esc(e.message)}</p>`;
+    return;
+  }
+  if (seq !== sentSeq) return;
+  const list = groupSentenceHits(r.hits);
+  const SHOW = 20;
+  const head = `<h3>질문 문장으로 찾은 원문</h3><p class="summary">핵심어 ${r.groups.length}개(<b>${esc(termsTxt)}</b>) 중 <b>${r.need}개 이상</b>이 한 문장에 함께 있는 상품 <b>${list.length}</b>개` +
+    ` (불러온 PDF ${DOCS.length}건 기준 · 특징 사전 없이 질문 문장 그대로 검색 · 같은 뜻 말 일부 포함)</p>`;
+  if (!list.length) {
+    box.innerHTML = head + `<p class="empty">핵심어가 한 문장에 모인 원문을 찾지 못했습니다. 위 '핵심어' 칩에서 덜 중요한 말을 빼(×) 보거나, 문서에 쓰인 표현으로 바꿔 물어보세요.</p>`;
+    return;
+  }
+  box.innerHTML = head + list.slice(0, SHOW).map(p => {
+    const best = p.hits[0];
+    const lines = p.hits.slice(0, 3).map(h =>
+      `<p class="snip"><a href="#" class="pg" data-open="${DOCS.indexOf(h.doc)}" data-page="${h.page}">${esc(h.doc.docType)}(${esc(h.doc.start || "?")}) p.${h.page}</a>` +
+      `${highlight(h.text, h.matched)} <span class="note">핵심어 ${h.hits}/${r.groups.length}</span></p>`).join("");
+    const versions = [...new Set(p.hits.map(h => h.doc.start || "판매일자 미상"))].sort().reverse();
+    return `<div class="pcard">
+      <h3>${esc(p.name)}</h3>
+      <div class="meta">판매일자: ${esc(versions.join(", "))} · 가장 많이 일치: 핵심어 ${best.hits}/${r.groups.length}</div>
+      ${lines}
+      <div class="buttons">
+        <button type="button" class="primary" data-analyze="${esc(p.key)}" data-start="${esc(best.doc.start)}">상품 분석 보기</button>
+        <button type="button" data-compare-add="${esc(p.key)}" data-start="${esc(best.doc.start)}">비교 담기</button>
+        <button type="button" data-open="${DOCS.indexOf(best.doc)}" data-page="${best.page}">${esc(best.doc.docType)} 열기</button>
+      </div>
+    </div>`;
+  }).join("") + (list.length > SHOW ? `<p class="note">외 ${list.length - SHOW}개 상품 — 핵심어를 더 넣거나 분류·판매상태로 좁혀 보세요.</p>` : "");
+}
+
+====================================================================================================
+# FILE: analysis.js  (상품 분석 (사업방법서·상품요약서·약관 → 핵심 특징 표))
+====================================================================================================
+// 상품 분석 — 사업방법서·상품요약서에서 핵심 특징을 '원문 그대로' 뽑아 정해진 형식으로 보여줌 (오프라인 규칙 기반)
+// 원칙: 문서에 있는 줄만 인용(요약·환산·추측 없음), 못 찾으면 "문서 내 확인 불가", 문서끼리 숫자가 다르면 [확인 필요]
+
+// 분석 대상 문서 (이 순서로 보여줌). 산출방법서는 계산식 위주라 제외
+const SOURCE_TYPES = ["사업방법서", "상품요약서", "약관"];
+
+// 사업방법서 2번 목차 "보험기간, 보험료 납입기간, 가입나이 및 보험료 납입주기" (보험기간·납입기간·가입나이가 함께 씀)
+const SEC2 = /^보험기간.*(납입기간|가입나이)/;
+const SECTION_MAX_LINES = 8;
+
+// 추출 항목: 공백 제거한 원문 줄에 정규식 적용
+const ITEM_DEFS = [
+  // labelRe: '보험기간:'처럼 항목명으로 적힌 줄이 있으면 그 줄만 사용 ("보험기간 중 사망" 같은 언급 제외)
+  // heading: 사업방법서 목차 제목(공백 제거, 앞 번호 뺀 부분)에 맞추는 별칭. 제목을 찾으면 다음 목차 제목 전까지가 내용
+  { id: "period", label: "보험기간", re: /보험기간|보장기간|세만기|년만기/, labelRe: /(보험기간|보장기간)[:：]/, words: "보험기간|보장기간", compare: true, heading: SEC2 },
+  { id: "pay", label: "납입기간·주기", re: /납입기간|납입주기|납입방법|월납|연납|일시납|\d+년납|전기납/, labelRe: /(납입기간|납입주기|납입방법)[:：]/, words: "납입기간|납입주기|납입방법", compare: true, heading: SEC2 },
+  { id: "age", label: "가입나이", re: /가입나이|가입연령|가입가능나이|가입가능연령/, labelRe: /(가입나이|가입연령)[:：]/, words: "가입나이|가입연령", compare: true, heading: SEC2 },
+  { id: "limit", label: "가입한도", re: /가입한도|가입금액|최저보험료|최고보험료|보험료한도|가입가능금액/, labelRe: /(가입한도|가입금액|보험료한도)[:：]/ },
+  { id: "benefit", label: "보험금 지급사유", re: /지급사유|보험금을지급|지급합니다|지급하는경우/, exclude: /지급하지않|면책/ },
+  // 지급기준표를 못 찾았을 때만 쓰는 규칙 (기간 + 지급하지 않음 / 기간 + 비율)
+  { id: "exempt", label: "면책", re: /면책기간|부담보|((\d+년|\d+개월|\d+일)(미만|이내|동안)|보장개시일).{0,80}(지급하지않|보장하지않|면책)|(\d+일|\d+년)(이|을)?지난날의다음날/ },
+  { id: "reduce", label: "감액", re: /((\d+년|\d+개월)(미만|이내)).{0,80}(\d+%|감액)|(\d+%|감액).{0,40}(\d+년|\d+개월)(미만|이내)/ },
+  { id: "withdraw", label: "중도인출", re: /중도인출|계약자적립액(의)?(일부)?인출|적립금(의)?인출/, words: "중도인출|계약자적립액인출",
+    heading: /중도인출|계약자적립액(의)?(일부)?인출|적립금(의)?인출/ },
+  { id: "extra", label: "추가납입", re: /추가납입/ },
+  { id: "etc", label: "기타", re: /해지환급금|갱신|배당|납입면제|특약|저해지|무해지/ },
+  // ---- 사업방법서 목차 기준 항목 (목차 번호 순서) ----
+  { id: "kind", label: "종목·세목", toc: 1, re: /세목|보험종목의(명칭|구성)/, heading: /^보험종목의(명칭|구성)|종목및세목|세목에관한사항/ },
+  { id: "mandatory", label: "의무가입", toc: 3, re: /의무(가입|부가)/, heading: /의무(가입|부가)/ },
+  { id: "dividend", label: "배당", toc: 4, re: /계약자배당|배당금/, heading: /^(계약자)?배당/ },
+  { id: "premium", label: "보험료", toc: 5, re: /기본보험료|영업보험료|추가납입보험료|최저보험료|최고보험료/,
+    heading: /^보험료(및보험가입금액)?에관한사항|^보험료의(산출|계산)/, labelRe: /(기본보험료|영업보험료)[:：]/, words: "기본보험료|영업보험료", compare: true },
+  { id: "discount", label: "보험료 할인", toc: 6, re: /보험료할인|할인율|\d+%할인/, heading: /할인/ },
+  { id: "bonus", label: "유지보너스", toc: 7, re: /유지보너스/, heading: /유지보너스/, labelRe: /유지보너스[:：]/, words: "유지보너스", compare: true },
+  { id: "prepay", label: "보험료 선납", toc: 8, re: /선납/, heading: /선납/, labelRe: /선납[:：]/, words: "선납", compare: true },
+  { id: "revival", label: "해지계약 부활", toc: 9, re: /부활|효력회복/, heading: /부활|효력회복/ },
+  { id: "overdue_rate", label: "연체이율", toc: 10, re: /연체이(율|자율)/, heading: /연체이(율|자)/, labelRe: /연체이율[:：]/, words: "연체이율", compare: true },
+  { id: "loan", label: "보험계약대출", toc: 12, re: /보험계약대출|약관대출/, heading: /보험계약대출|약관대출/, labelRe: /(보험계약대출|약관대출)[:：]/, words: "보험계약대출|약관대출", compare: true },
+  { id: "partial_refund", label: "해약환급금 일부지급", toc: 13, re: /해(약|지)환급금(의)?일부(지급|만지급)|일부지급형/, heading: /환급금(의)?일부지급/,
+    labelRe: /일부지급[:：]/, words: "일부지급", compare: true },
+  { id: "simple_uw", label: "간편심사형", toc: 14, re: /간편(심사|고지)/, heading: /간편(심사|고지)|유병자/ },
+  { id: "savings_type", label: "적립형 계약", toc: 15, re: /적립형(계약|으로|전환)/, heading: /적립형/ },
+];
+
+// 보험종류 구분 (상품명 → 본문 순으로 확인)
+const KIND_WORDS = [["종신", /종신/], ["정기", /정기보험/], ["연금", /연금보험/], ["저축", /저축보험/], ["건강", /건강보험/],
+  ["암", /암보험|암케어/], ["실손", /실손/], ["CI", /CI보험|치명적질병/i], ["변액", /변액/], ["유니버셜", /유니버셜/]];
+const TYPE_FLAGS = [["비갱신형", /비갱신형/], ["갱신형", /(?<!비)갱신형/], ["순수보장형", /순수보장형/], ["환급형", /(?<![저무])환급형/],
+  ["저해지형", /저해지/], ["무해지형", /무해지/], ["무배당", /무배당/], ["유배당", /유배당/],
+  ["금리확정형", /금리확정|확정금리/], ["금리연동형", /금리연동|공시이율/], ["보기 구분형(제1·제2보기)", /제1보기/]];
+
+// ---------- 원문 줄 ----------
+function docLines(d) {
+  if (d._lines) return d._lines;
+  const out = [];
+  d.pages.forEach((t, pi) => {
+    const lines = t.split("\n").map(s => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+    lines.forEach((s, li) => out.push({ page: pi + 1, text: s, next: lines[li + 1] || "", compact: norm(s) }));
+  });
+  return (d._lines = out);
+}
+
+// 짧은 제목 줄(예: "7. 보험금 지급사유")은 다음 줄을 붙여 보여줌. "보험기간: 종신"처럼 값이 있는 줄은 그대로
+const lineText = l => (l.text.length < 25 && l.next && !/[:：]\s*\S/.test(l.text) ? `${l.text} ${l.next}` : l.text).slice(0, 220);
+
+function findLines(docs, re, perDoc = 3, exclude = null) {
+  const hits = [], seen = new Set();
+  let total = 0;
+  for (const d of docs) {
+    let n = 0;
+    for (const l of docLines(d)) {
+      if (!re.test(l.compact) || (exclude && exclude.test(l.compact)) || isTocLine(l.text) || PAYTABLE_HEAD.test(l.compact)) continue;
+      const text = lineText(l), k = norm(text);
+      // 같은 줄, 또는 앞의 제목 줄에 이미 붙어 나온 줄은 건너뜀
+      if (seen.has(k) || [...seen].some(x => x.includes(k))) continue;
+      seen.add(k); total++;
+      if (n < perDoc) { hits.push({ doc: d, page: l.page, text }); n++; }
+    }
+  }
+  return { hits, more: total - hits.length };
+}
+
+// 목차 줄: "제5조【보험금을 지급하지 않는 사유】 ........27" 처럼 점선 뒤 쪽번호
+const isTocLine = t => /[.·…ㆍ‥]{4,}\s*\d*\s*$/.test(t) || /[.·…]{6,}/.test(t);
+
+// ---------- 약관의 보험금 지급기준표 ----------
+// 감액: "1년 미만 … 50%"처럼 기간 + 비율(또는 '감액'), 면책: 기간/보장개시일 + 지급하지 않음·면책
+const REDUCE_RE = /((\d+년|\d+개월|\d+일)(미만|이내|이전|까지|동안)|보장개시일.{0,20}(\d+년|\d+개월)).{0,80}(\d+(\.\d+)?%|감액|절반)|(\d+(\.\d+)?%|감액).{0,40}(\d+년|\d+개월)(미만|이내)/;
+const EXEMPT_RE = /((\d+년|\d+개월|\d+일)(미만|이내|동안|이전|까지)|보장개시일|책임개시일).{0,80}(지급하지않|보장하지않|면책|책임을지지않|해당하지않|보상하지않)|면책기간|부담보|보장개시일[은는].{0,40}(\d+일|\d+년|\d+개월)(이|을)?지난|(\d+일|\d+년|\d+개월)(이|을)?지난날의다음날/;
+const PAYTABLE_HEAD = /보험금\s*지급\s*기준\s*표/;
+// 표 제목 줄: "지급기준표"로 끝나는 짧은 줄 ("…지급기준표에서 정한 보험금" 같은 본문 조각은 제외)
+const isPayTableTitle = l => PAYTABLE_HEAD.test(l.compact) && !isTocLine(l.text) && l.compact.length <= 40 &&
+  /보험금지급기준표[)\]】>]*$/.test(l.compact.replace(/\([^)]*\)$/, ""));
+const NOTE_START = /^\s*(\(?주\s*\d*\)|주\s*\d*[).:：]|주\s*\d+\s|※|\*|<\s*주|【\s*주|\[\s*주)/;
+const NOTE_ITEM = /^\s*(\d+[.)]\s|[①-⑳]|\(\d+\)|[가-하][.)]\s|-\s|ㆍ|·)/;
+// 표 다음에 오는 예시 상자 등은 표 영역에서 제외
+const REGION_END = /^\s*(【[^】]*예시[^】]*】|\[[^\]]*예시[^\]]*\])/;
+// 감액·면책 판정: 보험금 지급 맥락이 있고, 이율·적립액 설명은 제외 ("5년 이내 1.25%" 같은 최저보증이율 문장 오인 방지)
+const PAY_CONTEXT = /지급|보험금|급여금|진단비|진단금|수술비|입원비|보장/;
+const NOT_BENEFIT = /이율|금리|이자|적립액|적립금|수수료|해지환급금|보험료의?납입/;
+const isReduce = t => { const c = norm(t); return REDUCE_RE.test(c) && PAY_CONTEXT.test(c) && !NOT_BENEFIT.test(c); };
+const isExempt = t => { const c = norm(t); return EXEMPT_RE.test(c) && !NOT_BENEFIT.test(c); };
+const TABLE_END = /^\s*(【\s*(부\s*표|별\s*표)|\[\s*(부\s*표|별\s*표)|<\s*(부\s*표|별\s*표)|부\s*표\s*\d|별\s*표\s*\d|제\s*\d+\s*관|제\s*\d+\s*조\s*[\[(【(])/;
+const MAX_TABLE_LINES = 160;
+
+function payTablesOf(docs) {
+  const tables = [];
+  for (const d of docs) {
+    const lines = docLines(d);
+    for (let i = 0; i < lines.length; i++) {
+      const head = lines[i];
+      // 제목 줄만 (본문 속 "보험금 지급기준표에서 정한…" 문장과 목차 줄은 제외)
+      if (!isPayTableTitle(head)) continue;
+      const rows = [], notes = [];
+      let inNotes = false, j = i + 1;
+      for (; j < lines.length && j < i + MAX_TABLE_LINES; j++) {
+        const l = lines[j];
+        if (isPayTableTitle(l)) break; // 다음 지급기준표
+        if (j > i + 1 && (TABLE_END.test(l.text) || REGION_END.test(l.text))) break;
+        if (isTocLine(l.text)) continue;
+        if (NOTE_START.test(l.text)) { inNotes = true; notes.push({ text: l.text, page: l.page, doc: d }); continue; }
+        if (inNotes) {
+          // "(주)" 아래 1. 2. ① 같은 번호 항목은 각각 하나의 주석, 그 밖의 줄은 앞 주석에 이어 붙임
+          if (NOTE_ITEM.test(l.text)) { notes.push({ text: l.text, page: l.page, doc: d }); continue; }
+          const last = notes[notes.length - 1];
+          if (last && last.text.length < 600) last.text += " " + l.text;
+          continue;
+        }
+        if (/^(급부명|급부명칭|지급사유|지급금액|보장명|구\s*분|\(기준|기준\s*:)/.test(l.text.replace(/\s+/g, " "))) continue; // 표 머리
+        rows.push({ text: l.text, page: l.page, doc: d });
+      }
+      if (rows.length || notes.length) tables.push({ doc: d, page: head.page, title: head.text, rows, notes });
+      i = j - 1;
+    }
+  }
+  return tables;
+}
+
+// 항목이 비었을 때 문구: 지급기준표에서 감액·면책 조건이 없으면 "없음", 그 밖에는 "문서 내 확인 불가"
+const NONE_TEXT = "없음 (보험금 지급기준표와 주석에 해당 조건 없음)";
+const emptyText = r => (r.none ? r.noneText || NONE_TEXT : "문서 내 확인 불가");
+
+// ---------- 지급기준표 칸 복원 (글자 위치로 행·열 다시 맞춤) ----------
+// 지급기준표가 있는 쪽만 PDF를 다시 읽어, 머리행(급부명칭·지급사유·지급금액)의 가로 위치로 열을 나누고
+// 세로 간격이 넓은 곳에서 행을 나눔 → "사망보험금 | 피보험자가 사망하였을 때 | 보험가입금액"
+// PDF 쪽의 글자 조각 → 위치(y)가 같은 것끼리 한 줄 (위 → 아래 순서)
+// 글자 조각 잇기: 간격이 좁으면 붙이고(한 글자씩 저장된 PDF 대비), 넓으면 띄움
+const joinItems = its => its.reduce((acc, it, i) => {
+  const prev = its[i - 1];
+  return acc + (prev && it.x - (prev.x + prev.w) > 2.5 ? " " : "") + it.str;
+}, "").replace(/\s+/g, " ").trim();
+
+function buildPageLines(items) {
+  const lines = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim() || !it.transform) continue;
+    const x = it.transform[4], y = it.transform[5];
+    let line = lines.find(l => Math.abs(l.y - y) <= 2);
+    if (!line) lines.push(line = { y, items: [] });
+    line.items.push({ x, w: it.width || 0, h: it.height || Math.abs(it.transform[3]) || 10, str: it.str });
+  }
+  lines.sort((a, b) => b.y - a.y);
+  for (const l of lines) {
+    l.items.sort((a, b) => a.x - b.x);
+    l.text = joinItems(l.items);
+    l.compact = norm(l.text);
+    l.h = Math.max(...l.items.map(i => i.h));
+  }
+  return lines;
+}
+
+function structurePage(items, pageNo, st) {
+  const lines = buildPageLines(items);
+  const join = joinItems;
+  const flush = () => {
+    const seg = st.cur;
+    if (!seg || !seg.raw.length) return;
+    const gaps = seg.raw.slice(1).map((l, i) => seg.raw[i].y - l.y).filter(g => g > 0.5);
+    const min = Math.min(...gaps), max = Math.max(...gaps);
+    const rows = [];
+    let row = null;
+    seg.raw.forEach((l, i) => {
+      const gap = i ? seg.raw[i - 1].y - l.y : Infinity;
+      // 간격이 모두 비슷하면 줄마다 한 행, 아니면 넓은 간격에서 행 나눔
+      const newRow = !row || l.page !== row.page || !gaps.length || max / min < 1.25 || gap > min * 1.35;
+      if (newRow) rows.push(row = { page: l.page, cells: seg.cols.map(() => []) });
+      const parts = seg.cols.map(() => []);
+      l.items.forEach(it => {
+        let c = 0;
+        seg.cols.forEach((cx, k) => { if (it.x + 4 >= cx) c = k; });
+        parts[c].push(it);
+      });
+      parts.forEach((its, c) => { if (its.length) row.cells[c].push(join(its)); });
+    });
+    // 칸 안에서 줄이 바뀐 글자는 이어 붙임 (한글은 붙여서, 그 밖은 띄어서)
+    const cellText = lines => lines.reduce((acc, t) => acc + (acc && !/[가-힣(]$/.test(acc) || /^[A-Za-z0-9]/.test(t) ? " " : "") + t, "");
+    seg.rows.push(...rows.map(r => ({ page: r.page, text: r.cells.map(c => cellText(c).trim()).filter(Boolean).join(" | ") }))
+      .filter(r => r.text));
+    seg.raw = [];
+  };
+  for (const l of lines) {
+    if (isPayTableTitle(l)) {
+      flush();
+      st.segs.push(st.cur = { title: l.text, page: pageNo, cols: null, raw: [], rows: [],
+        regions: [{ page: pageNo, top: l.y + l.h, bottom: l.y - 3 }] });
+      st.inNotes = false;
+      continue;
+    }
+    if (!st.cur) continue;
+    if (TABLE_END.test(l.text) || REGION_END.test(l.text)) { flush(); st.cur = null; continue; }
+    // 표·주석이 차지하는 세로 범위 (다음 쪽으로 이어지면 최대 2쪽까지)
+    let reg = st.cur.regions.find(r => r.page === pageNo);
+    if (!reg) {
+      if (st.cur.regions.length >= 2) { flush(); st.cur = null; continue; }
+      st.cur.regions.push(reg = { page: pageNo, top: l.y + l.h, bottom: l.y - 3 });
+    }
+    reg.bottom = Math.min(reg.bottom, l.y - Math.max(3, l.h * 0.35));
+    if (NOTE_START.test(l.text)) { flush(); st.inNotes = true; continue; }
+    if (/지급사유/.test(l.compact) && /지급금액|지급액|보험금액/.test(l.compact) && l.compact.length < 60) {
+      flush();
+      // 머리행 글자 위치 = 열 시작점 (가까운 조각은 하나로)
+      // 머리행에서 글자 사이 빈칸이 넓은 곳 = 칸 경계
+      const xs = [];
+      l.items.forEach((i, k) => { const prev = l.items[k - 1]; if (!prev || i.x - (prev.x + prev.w) > 8) xs.push(i.x); });
+      st.cur.cols = xs; st.inNotes = false;
+      continue;
+    }
+    if (st.inNotes || !st.cur.cols) continue;
+    st.cur.raw.push({ ...l, page: pageNo });
+  }
+  flush();
+}
+
+// 쪽의 세로 범위(top~bottom, PDF 좌표)를 그림으로 잘라냄
+async function renderRegions(pdf, regions) {
+  const images = [], canvases = new Map();
+  for (const r of regions) {
+    try {
+      if (!canvases.has(r.page)) {
+        const page = await pdf.getPage(r.page);
+        const vp = page.getViewport({ scale: 2 });
+        const cv = document.createElement("canvas");
+        cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+        await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+        canvases.set(r.page, { cv, vp });
+      }
+      const { cv, vp } = canvases.get(r.page);
+      const top = Math.max(0, vp.convertToViewportPoint(0, r.top + 4)[1]);
+      const bottom = Math.min(cv.height, vp.convertToViewportPoint(0, r.bottom)[1] + 4);
+      if (bottom - top < 20) continue;
+      const out = document.createElement("canvas");
+      out.width = cv.width; out.height = Math.ceil(bottom - top);
+      const ctx = out.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(cv, 0, top, cv.width, out.height, 0, 0, out.width, out.height);
+      images.push({ page: r.page, src: out.toDataURL("image/jpeg", 0.85) });
+    } catch (e) { /* 그림을 못 만들면 글자 결과만 사용 */ }
+  }
+  canvases.clear();
+  return images;
+}
+
+const openPdf = async d => {
+  const data = d.file ? new Uint8Array(await d.file.arrayBuffer()) : new Uint8Array(await (await fetch(d.url)).arrayBuffer());
+  return pdfjsLib.getDocument({ data, CMapReaderFactory: EmbeddedCMapReaderFactory, cMapPacked: true }).promise;
+};
+
+// ---------- 사업방법서 목차 구역 ----------
+// "5. 보험료에 관한 사항"처럼 번호로 시작하는 짧은 제목 줄부터 다음 번호(+1~+3) 제목 전까지를 한 구역으로 봄.
+// 구역 안의 "가." "(1)" "①" 같은 하위 번호, 수식 속 "2." 같은 줄에서는 끊지 않음. 별첨(서식) 이후는 보지 않음.
+// 제목 글자는 한글·영문·괄호로 시작 (또는 "14. 2 형(간편심사형)…"처럼 '숫자+형/종')
+const TOP_HEAD = /^(\d{1,2})[.)]((?:\d+(?:형|종)|[가-힣A-Za-z(「“"]).*)$/;
+const NONE_BODY = /^(해당사항(이)?없음|해당(사항)?없음|없음|-|―)\.?$/;
+const SECTION_NONE_TEXT = "없음 (사업방법서 해당사항 없음)";
+
+function sectionsOf(d) {
+  if (d._sections) return d._sections;
+  const secs = [];
+  let cur = null;
+  for (const l of docLines(d)) {
+    if (/^[(\[【<]?별첨/.test(l.compact)) break;
+    const m = l.compact.match(TOP_HEAD);
+    if (m && l.compact.length <= 45 && !isTocLine(l.text)) {
+      const n = +m[1];
+      if ((!cur && n <= 3) || (cur && n > cur.num && n <= cur.num + 3)) {
+        cur = { num: n, title: l.text, key: m[2].replace(/[:：].*$/, ""), page: l.page, doc: d, lines: [] };
+        if (/[:：]\s*\S/.test(l.text)) cur.lines.push(l); // "1. 보험종목의 명칭: 내용"처럼 제목 줄에 내용이 있으면 포함
+        secs.push(cur);
+        continue;
+      }
+    }
+    if (cur) cur.lines.push(l);
+  }
+  return (d._sections = secs);
+}
+
+// 표가 들어 있는 구역(짧은 줄이 많음)은 그림으로도 잘라 둠
+const isTableLike = sec => sec.lines.length >= 6 && sec.lines.filter(l => l.text.length < 20).length / sec.lines.length >= 0.3;
+
+async function prepareSections(docs) {
+  for (const d of docs) {
+    if (d.docType !== "사업방법서" || d._sectionImgs !== undefined) continue;
+    d._sectionImgs = {};
+    const secs = sectionsOf(d).filter(isTableLike);
+    if (!secs.length) continue;
+    try {
+      const pdf = await openPdf(d);
+      const all = sectionsOf(d);
+      const linesOfPage = new Map();
+      const pageLines = async p => {
+        if (!linesOfPage.has(p)) { const pg = await pdf.getPage(p); linesOfPage.set(p, buildPageLines((await pg.getTextContent()).items)); pg.cleanup(); }
+        return linesOfPage.get(p);
+      };
+      const findHead = (lines, sec) => { const k = norm(sec.title); return lines.find(l => l.compact === k || (k.length > 8 && l.compact.startsWith(k.slice(0, 12)))); };
+      for (const sec of secs) {
+        const next = all[all.indexOf(sec) + 1];
+        const last = Math.min(next ? next.page : sec.lines[sec.lines.length - 1].page, sec.page + 2);
+        const regions = [];
+        for (let p = sec.page; p <= last; p++) {
+          const lines = await pageLines(p);
+          if (!lines.length) continue;
+          let top = Math.max(...lines.map(l => l.y + l.h)), bottom = Math.min(...lines.map(l => l.y)) - 4;
+          if (p === sec.page) { const h = findHead(lines, sec); if (!h) break; top = h.y + h.h; }
+          if (next && p === next.page) { const h = findHead(lines, next); if (h) bottom = h.y + h.h + 2; }
+          if (top - bottom > 10) regions.push({ page: p, top, bottom });
+        }
+        d._sectionImgs[sec.num] = await renderRegions(pdf, regions);
+      }
+      await pdf.destroy();
+    } catch (e) { /* 그림 없이 글자만 */ }
+  }
+}
+
+async function prepareTables(docs) {
+  for (const d of docs) {
+    if (d.docType !== "약관" || d._tableSegs !== undefined) continue;
+    const tables = payTablesOf([d]);
+    d._tableSegs = null;
+    if (!tables.length) continue;
+    const pages = [...new Set(tables.flatMap(t => [t.page, ...t.rows.map(r => r.page), ...t.notes.map(n => n.page)]))].sort((a, b) => a - b);
+    try {
+      const pdf = await openPdf(d);
+      const st = { segs: [], cur: null, inNotes: false };
+      let prev = null;
+      for (const p of pages) {
+        if (prev !== null && p !== prev + 1) { st.cur = null; } // 떨어진 쪽은 이어 붙이지 않음
+        const page = await pdf.getPage(p);
+        structurePage((await page.getTextContent()).items, p, st);
+        page.cleanup();
+        prev = p;
+      }
+      // 표 영역을 그림으로 잘라 둠 (약관에 보이는 모양 그대로)
+      for (const seg of st.segs) seg.images = await renderRegions(pdf, seg.regions || []);
+      await pdf.destroy();
+      d._tableSegs = st.segs;
+    } catch (e) {
+      d._tableSegs = null; // 실패하면 줄 단위 결과 사용
+    }
+  }
+}
+
+// 줄 단위로 찾은 표와 칸 복원 결과를 순서대로 짝지음
+function attachStructured(tables) {
+  const byDoc = new Map();
+  tables.forEach(t => { if (!byDoc.has(t.doc)) byDoc.set(t.doc, []); byDoc.get(t.doc).push(t); });
+  for (const [d, ts] of byDoc) {
+    const segs = d._tableSegs || [];
+    ts.forEach((t, i) => {
+      if (!segs[i]) return;
+      if (segs[i].rows.length) t.structRows = segs[i].rows.map(r => ({ ...r, doc: d }));
+      if (segs[i].images && segs[i].images.length) t.images = segs[i].images.map(im => ({ ...im, doc: d }));
+    });
+  }
+  return tables;
+}
+
+const refOf = h => `${h.doc.docType} p.${h.page}`;
+// 비교용 숫자 (줄 앞 번호 "4.", "1)", "(2)" 는 제외)
+const stripEnum = t => t.replace(/^\s*(\d+[.)]|\(\d+\)|[①-⑳])\s*/, "");
+// "보험기간: 종신 / 납입기간: 10년납"처럼 한 줄에 여러 항목이 있으면 해당 항목 값만 잘라 비교
+function itemSegment(text, words) {
+  const m = stripEnum(text).match(new RegExp(`(?:${words})\\s*[:：]\\s*(.*?)(?=\\s*/|\\s+[^\\s:：/]+\\s*[:：]|$)`));
+  return m ? m[1] : stripEnum(text);
+}
+const numbersOf = texts => [...new Set(texts.map(stripEnum).join(" ").match(/\d+(?:[.,]\d+)?\s*(?:세|년|개월|일|%|원|만원|억원)?/g) || [])].map(norm).sort();
+
+// ---------- 분석 ----------
+function productVersions(key) {
+  const docs = DOCS.filter(d => productKeyOf(d) === key);
+  return [...new Set(docs.map(d => d.start))].sort().reverse();
+}
+
+function analyzeProduct(key, start) {
+  const all = DOCS.filter(d => productKeyOf(d) === key && d.start === start && !d.error);
+  const sources = all.filter(d => SOURCE_TYPES.includes(d.docType)).sort(byDocPriority);
+  const others = all.filter(d => !SOURCE_TYPES.includes(d.docType) && d.docType !== "산출방법서").sort(byDocPriority);
+  const name = (all[0] || DOCS.find(d => productKeyOf(d) === key) || {}).productName || key;
+  const base = sources.length ? sources : others;
+  const R = { key, start, name, base, rows: [], checks: [], cautions: [] };
+  const missing = SOURCE_TYPES.filter(t => !base.some(d => d.docType === t));
+  if (missing.length) R.checks.push(`이 판매일자 폴더에 ${missing.join("·")} 파일이 없어 해당 문서 내용은 반영되지 않았습니다.`);
+  if (!sources.length && others.length) R.checks.push(`사업방법서·상품요약서·약관을 찾지 못해 ${others.map(d => d.name).join(", ")} 기준으로 추출했습니다.`);
+  const failed = DOCS.filter(d => productKeyOf(d) === key && d.start === start && d.error);
+  failed.forEach(d => R.checks.push(`${d.name}: ${d.error}`));
+
+  // 규칙 기반 판정 중 확신이 낮은 항목 → 표의 항목명 옆 표시 + 확인 필요 목록
+  const lowConf = (label, reason, line) => {
+    R.lowConf = R.lowConf || new Set();
+    R.lowConf.add(label);
+    R.checks.push(`[확신 낮음] ${label} — ${reason}` + (line ? ` : "${line.text.slice(0, 80)}" (${line.ref})` : ""));
+  };
+
+  // 줄 앞의 항목명 (예: "6. 보험금 지급사유: …" → 보험금지급사유, "제3조(보험금의 지급사유) …" → 보험금의지급사유)
+  const lineLabelOf = t => {
+    const m = String(t).match(/^\s*(?:\d{1,2}\s*[.)]\s*)?([^:：()]{2,20})\s*[:：]/) || String(t).match(/^\s*제\s*\d+\s*조\s*\(([^)]{2,20})\)/);
+    return m ? norm(m[1]) : "";
+  };
+
+  // 1) 보험종류
+  const nameCompact = norm(name);
+  const kinds = KIND_WORDS.filter(([, re]) => re.test(nameCompact)).map(([k]) => ({ label: k, ref: "상품명" }));
+  if (!kinds.length) {
+    for (const [k, re] of KIND_WORDS) {
+      const h = findLines(base, re, 1).hits[0];
+      if (h) { kinds.push({ label: k, ref: refOf(h), text: h.text, hit: h }); break; }
+    }
+  }
+  const flags = [];
+  for (const [label, re] of TYPE_FLAGS) {
+    const h = findLines(base, re, 1).hits[0];
+    if (h) flags.push({ label, ref: refOf(h), text: h.text, hit: h });
+  }
+  // 갱신형과 비갱신형이 함께 있으면(담보별로 다를 수 있음) 확인 필요
+  if (flags.some(f => f.label === "갱신형") && flags.some(f => f.label === "비갱신형"))
+    R.checks.push("[확인 필요] 갱신형과 비갱신형 표현이 함께 있습니다 — 담보별로 다른지 원문 확인: " +
+      flags.filter(f => /갱신형/.test(f.label)).map(f => `"${f.text}" (${f.ref})`).join(" / "));
+  R.kinds = kinds; R.flags = flags;
+  kinds.filter(k => k.ref !== "상품명").forEach(k =>
+    lowConf("보험종류", `상품명에 종류가 없어 본문 단어 '${k.label}'로 판정`, { text: k.text, ref: k.ref }));
+  // 구분 표현은 상품을 정의하는 줄(명칭·구성·유형 등)이나 그 표현으로 시작하는 줄에서 찾았을 때만 믿을 만함
+  const DEFINE_LINE = /명칭|종목|구성|유형|종류|형태|구분|특이사항|상품의특징|해지환급금/;
+  flags.filter(f => !DEFINE_LINE.test(lineLabelOf(f.text)) && !norm(f.text).startsWith(norm(f.label).replace(/\(.*$/, "")))
+    .forEach(f => lowConf("보험종류", `'${f.label}'은 상품 정의 줄이 아닌 본문 문장의 단어로 판정 — 상품 구분을 설명하는 문장인지 확인`, { text: f.text, ref: f.ref }));
+  // hit(문서·쪽)을 함께 넘겨야 근거가 눌림 (상품명에서 판정한 것은 쪽이 없어 글자로만 표시)
+  R.rows.push({ label: "보험종류", lines: [...kinds, ...flags].map(x => ({ text: x.text ? `${x.label} — ${x.text}` : x.label, ref: x.ref, hit: x.hit })), more: 0 });
+
+  // 2) 항목별 원문 줄 — 보험금 지급사유·감액·면책은 약관의 '보험금 지급기준표'와 그 주석을 우선 사용
+  const tables = attachStructured(payTablesOf(base.filter(d => d.docType === "약관")));
+  R.payTables = tables;
+  // 근거 표시: 어느 표에서 나왔는지 (예: "약관 p.4 별표2 암진단특약 보험금 지급기준표 주석")
+  const tRef = x => `약관 p.${x.page} ${(x.table || "지급기준표").replace(/\s+/g, " ").slice(0, 30)}${x.note ? " 주석" : ""}`;
+  if (!tables.length && base.some(d => d.docType === "약관"))
+    R.checks.push("약관에서 '보험금 지급기준표'를 찾지 못해 지급사유·감액·면책은 본문 문장에서 찾았습니다 (정확도 낮음).");
+  const tLine = x => ({ text: x.text.slice(0, 400), ref: tRef(x), hit: { doc: x.doc, page: x.page } });
+  for (const def of ITEM_DEFS) {
+    if (tables.length && ["benefit", "reduce", "exempt"].includes(def.id)) {
+      const main = tables[0]; // 첫 번째 지급기준표 = 주계약
+      const notes = tables.flatMap(t => t.notes.map(n => ({ ...n, note: true, table: t.title })));
+      const rowsAll = tables.flatMap(t => (t.structRows || t.rows).map(r => ({ ...r, table: t.title })));
+      let lines, more = 0, none = false;
+      if (def.id === "benefit") {
+        const mainRows = main.structRows || main.rows;
+        lines = mainRows.slice(0, 10).map(r => tLine({ ...r, table: main.title }));
+        more = mainRows.length - lines.length;
+      } else {
+        const test = def.id === "reduce" ? isReduce : isExempt;
+        const found = [...notes, ...rowsAll].filter(x => test(x.text));
+        lines = found.slice(0, 6).map(tLine);
+        more = found.length - lines.length;
+        none = !found.length;
+      }
+      // 지급사유는 첫 번째(주계약) 표만 보여주고 나머지 표 제목을 안내. 감액·면책은 모든 표의 주석에서 찾음
+      const extra = def.id === "benefit" && tables.length > 1
+        ? "그 밖의 지급기준표: " + tables.slice(1).map(t => `${t.title} (p.${t.page})`).join(", ") : "";
+      if (none) lowConf(def.label, def.id === "reduce"
+        ? "지급기준표 주석에서 '기간 + 감액 비율' 문장을 찾지 못해 '없음'으로 판정 — 표 그림과 주석 확인"
+        : "지급기준표 주석에서 '기간 + 지급하지 않음' 문장을 찾지 못해 '없음'으로 판정 — 표 그림과 주석 확인");
+      R.rows.push({ id: def.id, label: def.label, lines, more, none, fromTable: true, extra,
+                    images: def.id === "benefit" ? main.images || [] : [] });
+      if (!lines.length && !none) R.checks.push(`${def.label}: 지급기준표에서 표 내용을 읽지 못함 (약관 p.${main.page} 원문 확인)`);
+      continue;
+    }
+    let { hits, more } = def.labelRe ? findLines(base, def.labelRe) : { hits: [] };
+    const labelled = hits.length > 0;
+    // 사업방법서 목차 구역 (항목명 줄이 없을 때)
+    if (!hits.length && def.heading) {
+      const sec = base.filter(d => d.docType === "사업방법서").flatMap(sectionsOf).find(x => def.heading.test(x.key));
+      if (sec) {
+        const body = norm(sec.lines.map(l => l.text).join(""));
+        const row = { id: def.id, label: def.label, section: sec.title, imgSource: "사업방법서",
+          images: (sec.doc._sectionImgs && sec.doc._sectionImgs[sec.num] || []).map(im => ({ ...im, doc: sec.doc })) };
+        if (!body || NONE_BODY.test(body)) {
+          Object.assign(row, { lines: [], more: 0, none: !!body, noneText: SECTION_NONE_TEXT,
+            ...(body ? {} : { images: [] }) });
+          if (!body) R.checks.push(`${def.label}: 사업방법서 '${sec.title}' 내용 없음`);
+        } else {
+          const ls = sec.lines.slice(0, SECTION_MAX_LINES);
+          Object.assign(row, { lines: ls.map(l => ({ text: l.text, ref: refOf({ doc: sec.doc, page: l.page }), hit: { doc: sec.doc, page: l.page } })),
+            more: sec.lines.length - ls.length });
+        }
+        R.rows.push(row);
+        continue;
+      }
+    }
+    if (!hits.length) ({ hits, more } = findLines(base, def.re, 3, def.exclude));
+    R.rows.push({ id: def.id, label: def.label, lines: hits.map(h => ({ text: h.text, ref: refOf(h), hit: h })), more });
+    // 항목명이 붙은 줄을 못 찾아 문장 검색으로 찾았는데, 그 줄이 다른 항목명으로 시작하면 다른 내용일 가능성이 큼
+    const own = new RegExp(def.words || def.label.replace(/[·\s]/g, "|"));
+    const foreign = !labelled && def.id !== "etc" ? hits.find(h => { const lb = lineLabelOf(h.text); return lb && !own.test(lb); }) : null;
+    if (foreign)
+      lowConf(def.label, `항목명 줄을 못 찾아 문장 검색으로 찾았고, 그 줄은 '${lineLabelOf(foreign.text)}' 항목의 줄 — 다른 내용일 수 있음`, { text: foreign.text, ref: refOf(foreign) });
+    if (!hits.length) R.checks.push(`${def.label}: 문서 내 확인 불가`);
+    // 사업방법서·상품요약서·약관 중 2개 이상에 나온 항목은 숫자를 대조해 다르면 확인 필요
+    if (def.compare && labelled) {
+      const byType = SOURCE_TYPES.map(t => hits.filter(h => h.doc.docType === t)).filter(x => x.length);
+      if (byType.length > 1) {
+        const sets = byType.map(x => numbersOf(x.map(h => itemSegment(h.text, def.words))).join());
+        if (new Set(sets).size > 1)
+          R.checks.push(`[확인 필요] ${def.label}: 문서 간 숫자가 다릅니다 — ` + byType.map(x => `"${x[0].text}" (${refOf(x[0])})`).join(" / "));
+      }
+    }
+  }
+
+  // 3) 유의사항: 불리하거나 오해하기 쉬운 조건 줄 (최대 5개)
+  const rules = [["exempt"], ["reduce"], ["etc", /갱신.*(보험료|인상|변경)|보험료.*(인상|변경)/],
+    ["etc", /저해지|무해지|해지환급금.*(없|적|지급하지)/], ["withdraw", /한도|제한|이내|수수료|경과|감소/],
+    ["extra", /한도|제한|이내|비용|공제/]];
+  for (const [id, re] of rules) {
+    if (R.cautions.length >= 5) break;
+    const l = (R.rows.find(r => r.id === id)?.lines || [])
+      .find(l => (!re || re.test(norm(l.text))) && !R.cautions.some(c => c.text === l.text));
+    if (l) R.cautions.push(l);
+  }
+
+  // 4) 한눈에 보기 (확인된 구분 + 분석 대상)
+  const facts = [...kinds.map(k => k.label), ...flags.map(f => f.label)];
+  R.overview = [
+    `${name}: ${facts.length ? facts.join(" · ") : "보험종류 문서 내 확인 불가"}`,
+    `판매개시일 ${start || "미상"} 기준 ${base.map(d => d.docType).join("·") || "문서 없음"} ${base.length}개 파일에서 원문 줄을 그대로 인용했습니다(요약·환산 없음).`,
+  ];
+  return R;
+}
+
+// ---------- 화면 ----------
+// 지급기준표 그림 (누르면 PDF 해당 쪽) + 글자로 읽은 결과는 펼쳐보기
+// 지급기준표 그림 모음 (창으로 크게 보기용) — 칸에는 작은 미리보기와 버튼만 둠
+const IMG_SETS = [];
+function registerImgSet(title, images) { IMG_SETS.push({ title, images }); return IMG_SETS.length - 1; }
+
+function tableImagesHtml(r, title = "보험금 지급기준표") {
+  const id = registerImgSet(title, r.images);
+  const pages = r.images.map(i => i.page).join(", p.");
+  const what = r.section ? "표" : "지급기준표";
+  const thumb = `<button type="button" class="tblthumb" data-imgset="${id}" title="크게 보기"><img src="${r.images[0].src}" alt="${what} 미리보기"></button>`;
+  const text = r.lines.length ? `<details class="tbltext"><summary>글자로 보기 (복사용 · 칸 구분이 정확하지 않을 수 있음)</summary>${r.lines.map(lineHtml).join("")}</details>` : "";
+  return `<div class="tblwrap">${thumb}<div class="tblmeta"><button type="button" class="mini primary" data-imgset="${id}">${what} 보기</button>` +
+    `<span class="note">${esc(r.imgSource || "약관")} p.${pages}${r.images.length > 1 ? ` (${r.images.length}쪽)` : ""}</span></div></div>` + text +
+    (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "");
+}
+
+// 큰 창: 그림 여러 묶음을 나란히 (상품 비교 시 여러 상품)
+function openImgModal(title, sets) {
+  $("modalTitle").textContent = title;
+  $("modalBody").style.gridTemplateColumns = `repeat(${sets.length}, minmax(${sets.length > 1 ? 420 : 300}px, 1fr))`;
+  $("modalBody").innerHTML = sets.map(s => `<div class="modal-col">${sets.length > 1 ? `<h4>${esc(s.title)}</h4>` : ""}` +
+    (s.images.length ? s.images.map(im => `<img src="${im.src}" alt="${esc(im.doc.docType)} p.${im.page}">` +
+      `<p class="note">${esc(im.doc.docType)} p.${im.page} <a href="#" data-open="${DOCS.indexOf(im.doc)}" data-page="${im.page}">원문 열기</a></p>`).join("")
+      : `<p class="na">지급기준표 그림 없음</p>`) + `</div>`).join("");
+  $("imgModal").hidden = false;
+  $("modalClose").focus();
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-imgset]");
+  if (b) { const s = IMG_SETS[+b.dataset.imgset]; openImgModal(s.title, [s]); return; }
+  if (e.target.id === "imgModal" || e.target.closest("#modalClose")) $("imgModal").hidden = true;
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("imgModal").hidden = true; });
+
+// ---------- 화면 ----------
+let CURRENT = null;
+
+const lineHtml = l => `<p class="line">${esc(l.text)} ` +
+  (l.hit ? `<a href="#" class="ref" data-open="${DOCS.indexOf(l.hit.doc)}" data-page="${l.hit.page}">(${esc(l.ref)})</a>` : `<span class="ref">(${esc(l.ref)})</span>`) + `</p>`;
+
+async function showAnalysis(key, start) {
+  const versions = productVersions(key);
+  if (!versions.includes(start)) start = versions[0];
+  $("analysisPanel").hidden = false;
+  showView("analysis");
+  $("analysisBody").innerHTML = `<p class="note">문서 본문을 불러오는 중…</p>`;
+  try {
+    const vdocs = DOCS.filter(d => productKeyOf(d) === key && d.start === start);
+    await ensurePages(vdocs);
+    await prepareTables(vdocs);
+    await prepareSections(vdocs);
+  } catch (e) {
+    $("analysisBody").innerHTML = `<p class="warn">본문을 불러오지 못했습니다: ${esc(e.message)}</p>`;
+    return;
+  }
+  const R = analyzeProduct(key, start);
+  CURRENT = R;
+  $("analysisPanel").hidden = false;
+  $("analysisTitle").textContent = `상품 분석 — ${R.name}`;
+  $("analysisVersion").innerHTML = versions.map(v => `<option value="${esc(v)}"${v === start ? " selected" : ""}>판매개시일 ${esc(v || "미상")}</option>`).join("");
+  const rows = R.rows.map(r => `<tr>
+      <td>${esc(r.label)}${R.lowConf && R.lowConf.has(r.label) ? `<span class="lowconf" title="규칙 판정 확신 낮음 — 아래 확인 필요 항목 참고">확신 낮음</span>` : ""}</td>
+      <td>${r.images && r.images.length ? tableImagesHtml(r, `${R.name} (${R.start || "미상"}) ${r.section ? "사업방법서 " + r.section : "보험금 지급기준표"}`) : r.lines.length ? r.lines.map(lineHtml).join("") + (r.more > 0 ? `<p class="note">외 ${r.more}줄 더 있음 — 원문 확인</p>` : "")
+        + (r.extra ? `<p class="note">${esc(r.extra)}</p>` : "")
+ : `<span class="na">${esc(emptyText(r))}</span>`}</td>
+      <td>${r.lines.length ? esc([...new Set(r.lines.map(l => l.ref))].join(", ")) : "-"}</td>
+    </tr>`).join("");
+  const vdocs = DOCS.filter(d => productKeyOf(d) === key && d.start === start);
+  $("analysisBody").innerHTML = `
+    <div class="doclinks-box"><b>기초서류 원문</b> <span class="note">(판매개시일 ${esc(start || "미상")} · 누르면 PDF가 열림)</span>${docLinksHtml(vdocs, "doclinks-row")}</div>
+    <h3>한눈에 보기</h3>
+    ${R.overview.map(t => `<p class="line">${esc(t)}</p>`).join("")}
+    <h3>핵심 특징 표</h3>
+    <div class="table-scroll"><table class="facts"><thead><tr><th>항목</th><th>내용 (원문 그대로)</th><th>문서 근거</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <h3>유의사항</h3>
+    ${R.cautions.length ? `<ul>${R.cautions.map(l => `<li>${lineHtml(l)}</li>`).join("")}</ul>` : `<p class="na">문서에서 유의 조건 줄을 찾지 못했습니다.</p>`}
+    <h3>확인 필요 항목</h3>
+    ${R.checks.length ? `<ul>${R.checks.map(c => `<li class="${c.startsWith("[확인 필요]") ? "check" : c.startsWith("[확신 낮음]") ? "low" : ""}">${esc(c)}</li>`).join("")}</ul>` : `<p class="na">없음</p>`}
+    <p class="note">※ 규칙 기반 자동 추출입니다. [확신 낮음]은 항목명·목차·지급기준표가 아니라 본문 단어나 문장 검색으로 판정한 항목입니다. 항목 분류가 틀릴 수 있으니 근거 페이지를 눌러 원문을 확인하세요. 담보·형별 구분은 원문 줄에 적힌 그대로 보여줍니다.</p>`;
+  window.scrollTo(0, 0);
+}
+
+// 결과를 마크다운 표로 복사 (보고서·메일 붙여넣기용)
+function analysisMarkdown(R) {
+  const cell = s => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  return [`# 상품 분석 — ${R.name} (판매개시일 ${R.start || "미상"})`, "", "### 한눈에 보기", ...R.overview, "",
+    "### 핵심 특징 표", "| 항목 | 내용 | 문서 근거(페이지/조항) |", "|---|---|---|",
+    ...R.rows.map(r => `| ${r.label} | ${r.lines.length ? cell(r.lines.map(l => l.text).join(" / ")) : emptyText(r)} | ${cell([...new Set(r.lines.map(l => l.ref))].join(", ")) || "-"} |`),
+    "", "### 유의사항", ...(R.cautions.length ? R.cautions.map(l => `- ${l.text} (${l.ref})`) : ["- 문서에서 찾지 못함"]),
+    "", "### 확인 필요 항목", ...(R.checks.length ? R.checks.map(c => `- ${c}`) : ["- 없음"])].join("\n");
+}
+
+// 사용자가 준 분석 프롬프트 + 문서 본문 (사내 승인된 AI에 직접 붙여넣는 용도. 앱은 아무것도 전송하지 않음)
+const ANALYSIS_PROMPT = `당신은 보험상품 문서를 분석하는 보험 상품 분석 전문가입니다.
+아래 [문서]는 보험 상품의 사업방법서·상품요약서·약관입니다.
+이 문서에서 상품의 핵심 특징을 추출해 [출력 형식]에 맞춰 요약하세요.
+
+## 작성 원칙
+1. 문서에 명시된 내용만 사용합니다. 추측하거나 일반 상식으로 보충하지 않습니다.
+2. 문서에서 찾을 수 없는 항목은 "문서 내 확인 불가"로 표기합니다. 빈칸으로 두거나 지어내지 않습니다.
+3. 숫자(나이, 기간, 금액, 비율)와 조건은 원문 그대로 옮깁니다. 반올림·환산·의역을 하지 않습니다.
+4. 담보(보장)·플랜·형(例: 1형/2형, 갱신형/비갱신형)별로 내용이 다르면 구분해서 각각 적습니다.
+5. 보험업계 용어는 원문 표현을 유지하되, 필요하면 괄호로 짧게 풀이합니다.
+6. 상충하거나 모호한 내용이 있으면 임의로 해석하지 말고 "[확인 필요]"와 함께 원문 근거를 적습니다.
+
+## 추출 항목
+1. 상품명 / 보험종류
+   - 종신, 정기, 연금, 저축, 건강, 암, 실손, CI, 변액, 유니버셜 등 구분
+   - 갱신형/비갱신형, 보장형/환급형, 배당 유무, 금리확정/금리연동 여부
+2. 보험기간 (주계약 및 담보별, 만기 형태: 세만기/년만기/종신)
+3. 납입기간(납기) 및 납입방법 (월납/연납/일시납 등 납입주기)
+4. 가입나이 (최저~최고, 보험기간·납입기간·성별·플랜별로 다르면 구분)
+5. 가입한도 (최저/최고 가입금액, 최저/최고 보험료, 심사 기준에 따른 제한)
+6. 보험금 지급사유 (담보별로 어떤 경우에 얼마를 지급하는지, 지급 횟수·감액 지급 기간 포함)
+7. 면책 사유 (보험금을 지급하지 않는 경우) 및 면책기간·부책기간
+8. 감액 조건 (감액지급 기간과 비율, 감액 사유)
+9. 중도인출 (계약자적립액 인출 포함 — 가능 여부, 가능 시점, 한도, 횟수, 수수료·해지환급금 영향)
+10. 추가납입 (가능 여부, 한도, 가능 기간, 추가납입 시 비용 구조)
+11. 기타 특이사항 (해지환급금 구조, 갱신 조건, 계약자배당, 특약 구성, 면제 조건 등)
+— 아래 12~24는 사업방법서 목차 기준 항목입니다. 사업방법서에 "해당사항 없음"으로 적혀 있으면 "없음 (사업방법서 해당사항 없음)"으로 표기합니다.
+12. 종목·세목 (보험종목의 명칭과 세목, 형 구분)
+13. 의무가입
+14. 배당
+15. 보험료 (기본보험료·영업보험료·추가납입보험료 등의 정의와 구성)
+16. 보험료 할인
+17. 유지보너스 (보험료 납입기간별 발생일과 금액)
+18. 보험료 선납 (선납 가능 기간, 할인 방법)
+19. 해지계약 부활(효력회복) (청약 가능 기간 등)
+20. 연체이율
+21. 보험계약대출 (대출 한도, 상환·차감 방법)
+22. 해약환급금 일부지급 (지급 비율, 적용 기간)
+23. 간편심사형 (대상, 심사 방식)
+24. 적립형 계약 (전환 조건, 보험기간·납입기간·전환나이)
+
+## 출력 형식
+### 한눈에 보기
+(상품의 성격을 2~3줄로 요약)
+
+### 핵심 특징 표
+| 항목 | 내용 | 문서 근거(페이지/조항) |
+|---|---|---|
+| 보험종류 | | |
+| 보험기간 | | |
+| 납입기간·주기 | | |
+| 가입나이 | | |
+| 가입한도 | | |
+| 보험금 지급사유 | | |
+| 면책 | | |
+| 감액 | | |
+| 중도인출 | | |
+| 추가납입 | | |
+| 기타 | | |
+| 종목·세목 | | |
+| 의무가입 | | |
+| 배당 | | |
+| 보험료 | | |
+| 보험료 할인 | | |
+| 유지보너스 | | |
+| 보험료 선납 | | |
+| 해지계약 부활 | | |
+| 연체이율 | | |
+| 보험계약대출 | | |
+| 해약환급금 일부지급 | | |
+| 간편심사형 | | |
+| 적립형 계약 | | |
+
+### 유의사항
+(가입자가 오해하기 쉬운 조건, 제한, 불리한 조건을 3~5개 이내로 정리)
+
+### 확인 필요 항목
+(문서에서 찾지 못했거나 모호한 항목 목록)
+
+[문서]
+`;
+
+function promptWithDocs(R) {
+  const docs = R.base;
+  return ANALYSIS_PROMPT + docs.map(d =>
+    `--- ${d.docType}: ${d.path} ---\n` + d.pages.map((t, i) => `[p.${i + 1}]\n${t.trim()}`).join("\n\n")).join("\n\n");
+}
+
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+  }
+  const old = btn.textContent;
+  btn.textContent = "복사됨";
+  setTimeout(() => { btn.textContent = old; }, 1200);
+}
+
+document.addEventListener("click", e => {
+  const b = e.target.closest("button[data-analyze]");
+  if (b) showAnalysis(b.dataset.analyze, b.dataset.start);
+});
+$("analysisVersion").addEventListener("change", e => CURRENT && showAnalysis(CURRENT.key, e.target.value));
+$("closeAnalysisBtn").addEventListener("click", () => { $("analysisPanel").hidden = true; });
+$("copyMdBtn").addEventListener("click", e => CURRENT && copyText(analysisMarkdown(CURRENT), e.target));
+$("copyPromptBtn").addEventListener("click", e => {
+  if (!CURRENT) return;
+  if (!confirm("문서 본문이 포함된 프롬프트를 클립보드에 복사합니다.\n외부 AI에 붙여넣기 전에 사내 보안 기준을 확인하세요.")) return;
+  copyText(promptWithDocs(CURRENT), e.target);
+});
+
+====================================================================================================
+# FILE: compare.js  (상품 비교 · 개정 전후 비교)
+====================================================================================================
+// 2단계 — 상품 비교 · 개정 전후 비교
+// 비교함에 상품(판매일자 단위)을 2~4개 담아 핵심 특징 표의 항목을 나란히 비교하고,
+// 같은 상품의 두 판매일자를 비교하면 문서별로 바뀐 줄(추가·삭제·변경)을 보여줍니다. 모두 원문 줄 그대로.
+
+const MAX_COMPARE = 4;
+const TRAY = []; // [{ key, start, name }]
+let LAST_COMPARE = null;
+
+// ---------- 비교함 ----------
+function addToCompare(key, start) {
+  if (TRAY.some(t => t.key === key && t.start === start)) return renderTray("이미 담긴 상품입니다.");
+  if (TRAY.length >= MAX_COMPARE) return renderTray(`최대 ${MAX_COMPARE}개까지 비교할 수 있습니다.`);
+  const d = DOCS.find(x => productKeyOf(x) === key);
+  TRAY.push({ key, start, name: (d && d.productName) || key });
+  renderTray();
+}
+
+function renderTray(message = "") {
+  const tray = $("compareTray");
+  tray.hidden = !TRAY.length && !message;
+  $("trayItems").innerHTML = TRAY.map((t, i) =>
+    `<span class="chip">${esc(t.name)} <b>${esc(t.start || "판매일자 미상")}</b>` +
+    `<button type="button" data-tray-remove="${i}" title="빼기">×</button></span>`).join("") +
+    (message ? ` <span class="warn">${esc(message)}</span>` : "");
+  $("compareBtn").disabled = TRAY.length < 2;
+  $("compareBtn").textContent = TRAY.length >= 2 && TRAY.every(t => t.key === TRAY[0].key) && TRAY.length === 2
+    ? "개정 전후 비교" : `비교하기 (${TRAY.length})`;
+}
+
+// ---------- 항목 비교 ----------
+// 행 상태: 같음 / 숫자 다름 / 표현 다름 / 일부 확인 불가 / 모두 확인 불가
+function rowStatus(label, results) {
+  // 감액·면책 '없음'도 비교 가능한 값으로 취급
+  const cells = results.map(R => { const r = R.rows.find(x => x.label === label); return r.none ? [{ text: "없음" }] : r.lines; });
+  if (cells.every(ls => !ls.length)) return { cls: "none", text: "모두 확인 불가" };
+  if (cells.some(ls => !ls.length)) return { cls: "diff", text: "일부 확인 불가" };
+  const isNone = ls => ls.length === 1 && ls[0].text === "없음";
+  if (cells.some(isNone) && !cells.every(isNone)) return { cls: "diff", text: "있음/없음 다름" };
+  if (label === "보험종류") {
+    const sets = results.map(R => [...R.kinds, ...R.flags].map(x => x.label).sort().join("|"));
+    return new Set(sets).size === 1 ? { cls: "same", text: "같음" } : { cls: "diff", text: "구분 다름" };
+  }
+  // "보험기간: 종신 / 납입기간: …"처럼 한 줄에 여러 항목이 있으면 해당 항목 값만 비교
+  const def = ITEM_DEFS.find(d => d.label === label);
+  const val = t => (def && def.words ? itemSegment(t, def.words) : stripEnum(t));
+  const texts = cells.map(ls => [...new Set(ls.map(l => norm(val(l.text))))].sort().join("|"));
+  if (new Set(texts).size === 1) return { cls: "same", text: "같음" };
+  const nums = cells.map(ls => numbersOf(ls.map(l => val(l.text))).join());
+  return new Set(nums).size > 1 ? { cls: "diff", text: "숫자 다름" } : { cls: "diff", text: "표현 다름" };
+}
+
+// ---------- 개정 전후: 문서별 바뀐 줄 ----------
+const lineKey = t => norm(stripEnum(t));
+// "가입나이: …" 처럼 항목명이 있는 줄은 항목명이 같으면 '변경'으로 짝지음
+const lineLabel = t => { const m = stripEnum(t).match(/^([^:：]{1,20})[:：]/); return m ? norm(m[1]) : ""; };
+
+function diffDocs(oldDocs, newDocs) {
+  const lines = docs => docs.flatMap(d => docLines(d).map(l => ({ ...l, doc: d })));
+  const a = lines(oldDocs), b = lines(newDocs);
+  const aKeys = new Set(a.map(l => lineKey(l.text))), bKeys = new Set(b.map(l => lineKey(l.text)));
+  const removed = a.filter(l => !bKeys.has(lineKey(l.text)));
+  const added = b.filter(l => !aKeys.has(lineKey(l.text)));
+  const changed = [];
+  for (const r of removed) {
+    const lab = lineLabel(r.text);
+    if (!lab) continue;
+    const i = added.findIndex(x => !x.paired && lineLabel(x.text) === lab);
+    if (i !== -1) { added[i].paired = r.paired = true; changed.push({ from: r, to: added[i] }); }
+  }
+  return { changed, removed: removed.filter(l => !l.paired), added: added.filter(l => !l.paired) };
+}
+
+function revisionDiff(key, oldStart, newStart) {
+  const pick = (start, t) => DOCS.filter(d => productKeyOf(d) === key && d.start === start && d.docType === t && !d.error);
+  return SOURCE_TYPES.map(t => {
+    const o = pick(oldStart, t), n = pick(newStart, t);
+    if (!o.length || !n.length) return { type: t, missing: !o.length && !n.length ? "양쪽 모두 없음" : !o.length ? `${oldStart} 판에 없음` : `${newStart} 판에 없음` };
+    return { type: t, ...diffDocs(o, n) };
+  });
+}
+
+// ---------- 화면 ----------
+const MAX_DIFF_LINES = 60;
+const refLink = l => `<a href="#" class="ref" data-open="${DOCS.indexOf(l.doc)}" data-page="${l.page}">(${esc(l.doc.docType)} p.${l.page})</a>`;
+
+async function showCompare() {
+  if (TRAY.length < 2) return;
+  const panel = $("comparePanel");
+  panel.hidden = false;
+  showView("compare");
+  $("compareBody").innerHTML = `<p class="note">문서 본문을 불러오는 중…</p>`;
+  const items = [...TRAY].sort((x, y) => (x.key === y.key ? (x.start || "").localeCompare(y.start || "") : 0));
+  try {
+    const cdocs = DOCS.filter(d => items.some(t => productKeyOf(d) === t.key && d.start === t.start));
+    await ensurePages(cdocs);
+    await prepareTables(cdocs);
+    await prepareSections(cdocs);
+  } catch (e) {
+    $("compareBody").innerHTML = `<p class="warn">본문을 불러오지 못했습니다: ${esc(e.message)}</p>`;
+    return;
+  }
+  const results = items.map(t => analyzeProduct(t.key, t.start));
+  const revision = items.length === 2 && items[0].key === items[1].key;
+  const diff = revision ? revisionDiff(items[0].key, items[0].start, items[1].start) : null;
+  LAST_COMPARE = { items, results, revision, diff };
+  $("compareTitle").textContent = revision ? `개정 전후 비교 — ${results[0].name}` : `상품 비교 (${items.length}개)`;
+  renderCompare();
+}
+
+function renderCompare() {
+  if (!LAST_COMPARE) return;
+  const { results, diff } = LAST_COMPARE;
+  const onlyDiff = $("onlyDiff").checked;
+  const labels = results[0].rows.map(r => r.label);
+  const head = `<tr><th>항목</th>${results.map(R => `<th>${esc(R.name)}<div class="path">판매개시일 ${esc(R.start || "미상")}</div></th>`).join("")}<th>비교</th></tr>`;
+  let diffCount = 0;
+  const body = labels.map(label => {
+    const st = rowStatus(label, results);
+    if (st.cls !== "same" && st.cls !== "none") diffCount++;
+    if (onlyDiff && (st.cls === "same" || st.cls === "none")) return "";
+    const cells = results.map(R => {
+      const row = R.rows.find(r => r.label === label);
+      if (row.images && row.images.length) return `<td>${tableImagesHtml(row, `${R.name} (${R.start || "미상"})${row.section ? " " + row.section : ""}`)}</td>`;
+      return `<td>${row.lines.length ? row.lines.map(lineHtml).join("") + (row.more > 0 ? `<p class="note">외 ${row.more}줄</p>` : "")
+        : `<span class="na">${esc(emptyText(row))}</span>`}</td>`;
+    }).join("");
+    return `<tr class="cmp-${st.cls}"><td>${esc(label)}</td>${cells}<td><span class="badge ${st.cls === "same" ? "on" : st.cls === "none" ? "off" : "plan"}">${esc(st.text)}</span></td></tr>`;
+  }).join("");
+
+  let diffHtml = "";
+  if (diff) {
+    diffHtml = `<h3>문서별 바뀐 줄 (${esc(results[0].start)} → ${esc(results[1].start)})</h3>
+      <p class="note">줄 단위로 비교했습니다. 줄 앞 번호만 바뀐 경우는 같은 줄로 봅니다. "가입나이:"처럼 항목명이 같은 줄은 '변경'으로 짝지었습니다.</p>` +
+      diff.map(x => {
+        if (x.missing) return `<h4>${esc(x.type)}</h4><p class="na">비교 불가 — ${esc(x.missing)}</p>`;
+        const n = x.changed.length + x.removed.length + x.added.length;
+        if (!n) return `<h4>${esc(x.type)}</h4><p class="na">바뀐 줄 없음</p>`;
+        const list = [
+          ...x.changed.map(c => `<li class="chg"><b>변경</b> ${esc(c.from.text)} ${refLink(c.from)}<br>→ ${esc(c.to.text)} ${refLink(c.to)}</li>`),
+          ...x.removed.map(l => `<li class="del"><b>삭제</b> ${esc(l.text)} ${refLink(l)}</li>`),
+          ...x.added.map(l => `<li class="add"><b>추가</b> ${esc(l.text)} ${refLink(l)}</li>`),
+        ];
+        return `<h4>${esc(x.type)} — 변경 ${x.changed.length} · 삭제 ${x.removed.length} · 추가 ${x.added.length}</h4>
+          <ul class="difflist">${list.slice(0, MAX_DIFF_LINES).join("")}</ul>` +
+          (list.length > MAX_DIFF_LINES ? `<p class="note">외 ${list.length - MAX_DIFF_LINES}줄 — [엑셀 저장]에는 전부 들어갑니다.</p>` : "");
+      }).join("");
+  }
+  const checks = results.flatMap(R => R.checks.filter(c => c.startsWith("[확인 필요]") || c.startsWith("[확신 낮음]") || c.includes("파일이 없어")).map(c => `${R.name} (${R.start}): ${c}`));
+  $("compareBody").innerHTML = `
+    ${results.some(R => (R.rows.find(r => r.id === "benefit") || {}).images?.length)
+      ? `<div class="buttons" style="margin-bottom:8px"><button type="button" class="primary" id="sideBySideBtn">지급기준표 나란히 보기</button></div>` : ""}
+    <p class="summary">${labels.length}개 항목 중 <b>${diffCount}</b>개 항목이 다릅니다. (원문 줄 기준 자동 판정 — 근거를 눌러 원문 확인)</p>
+    <div class="table-scroll"><table class="facts compare"><thead>${head}</thead><tbody>${body || `<tr><td colspan="${results.length + 2}" class="empty">다른 항목이 없습니다.</td></tr>`}</tbody></table></div>
+    ${diffHtml}
+    ${checks.length ? `<h3>확인 필요</h3><ul>${checks.map(c => `<li class="${c.includes("[확신 낮음]") ? "low" : "check"}">${esc(c)}</li>`).join("")}</ul>` : ""}`;
+}
+
+// ---------- 내보내기 ----------
+const cellText = row => row.lines.length ? row.lines.map(l => `${l.text} (${l.ref})`).join(" / ") : emptyText(row);
+
+function compareMarkdown() {
+  const { results, diff } = LAST_COMPARE;
+  const esc2 = s => String(s).replace(/\|/g, "\\|").replace(/\n/g, " ");
+  const out = [`# ${$("compareTitle").textContent}`, "",
+    `| 항목 | ${results.map(R => esc2(`${R.name} (${R.start || "미상"})`)).join(" | ")} | 비교 |`,
+    `|---|${results.map(() => "---").join("|")}|---|`,
+    ...results[0].rows.map(r => `| ${r.label} | ${results.map(R => esc2(cellText(R.rows.find(x => x.label === r.label)))).join(" | ")} | ${rowStatus(r.label, results).text} |`)];
+  if (diff) {
+    out.push("", `## 문서별 바뀐 줄 (${results[0].start} → ${results[1].start})`);
+    diff.forEach(x => {
+      out.push("", `### ${x.type}`);
+      if (x.missing) return out.push(`- 비교 불가: ${x.missing}`);
+      x.changed.forEach(c => out.push(`- 변경: ${c.from.text} → ${c.to.text} (${c.to.doc.docType} p.${c.to.page})`));
+      x.removed.forEach(l => out.push(`- 삭제: ${l.text} (${l.doc.docType} p.${l.page})`));
+      x.added.forEach(l => out.push(`- 추가: ${l.text} (${l.doc.docType} p.${l.page})`));
+      if (!x.changed.length && !x.removed.length && !x.added.length) out.push("- 바뀐 줄 없음");
+    });
+  }
+  return out.join("\n");
+}
+
+// 엑셀에서 바로 열리는 CSV (UTF-8 BOM)
+function compareCsv() {
+  const { results, diff } = LAST_COMPARE;
+  const q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const rows = [["항목", ...results.map(R => `${R.name} (${R.start || "미상"})`), "비교"],
+    ...results[0].rows.map(r => [r.label, ...results.map(R => cellText(R.rows.find(x => x.label === r.label))), rowStatus(r.label, results).text])];
+  if (diff) {
+    rows.push([], ["문서", "구분", `${results[0].start} 판`, `${results[1].start} 판`, "근거"]);
+    diff.forEach(x => {
+      if (x.missing) return rows.push([x.type, "비교 불가", x.missing]);
+      x.changed.forEach(c => rows.push([x.type, "변경", c.from.text, c.to.text, `p.${c.from.page} → p.${c.to.page}`]));
+      x.removed.forEach(l => rows.push([x.type, "삭제", l.text, "", `p.${l.page}`]));
+      x.added.forEach(l => rows.push([x.type, "추가", "", l.text, `p.${l.page}`]));
+    });
+  }
+  return "﻿" + rows.map(r => r.map(q).join(",")).join("\r\n");
+}
+
+function download(name, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+// ---------- 이벤트 ----------
+document.addEventListener("click", e => {
+  const add = e.target.closest("button[data-compare-add]");
+  if (add) addToCompare(add.dataset.compareAdd, add.dataset.start);
+  const rm = e.target.closest("button[data-tray-remove]");
+  if (rm) { TRAY.splice(+rm.dataset.trayRemove, 1); renderTray(); }
+});
+$("addCompareBtn").addEventListener("click", () => CURRENT && addToCompare(CURRENT.key, CURRENT.start));
+$("prevVersionBtn").addEventListener("click", () => {
+  if (!CURRENT) return;
+  const older = productVersions(CURRENT.key).filter(v => v && v < CURRENT.start); // 최신순 정렬
+  if (!older.length) return alert("이전 판매일자 문서가 없습니다.");
+  TRAY.length = 0;
+  TRAY.push({ key: CURRENT.key, start: older[0], name: CURRENT.name }, { key: CURRENT.key, start: CURRENT.start, name: CURRENT.name });
+  renderTray();
+  showCompare();
+});
+$("compareBtn").addEventListener("click", showCompare);
+$("clearTrayBtn").addEventListener("click", () => { TRAY.length = 0; renderTray(); });
+$("onlyDiff").addEventListener("change", renderCompare);
+$("closeCompareBtn").addEventListener("click", () => { $("comparePanel").hidden = true; });
+$("copyCompareBtn").addEventListener("click", e => LAST_COMPARE && copyText(compareMarkdown(), e.target));
+$("csvCompareBtn").addEventListener("click", () => LAST_COMPARE &&
+  download(`${LAST_COMPARE.revision ? "revision-compare" : "product-compare"}_${TODAY}.csv`, compareCsv())); // 영문 파일명: 일부 환경에서 한글 다운로드 이름이 깨짐
+
+// 비교 중인 상품들의 지급기준표를 한 창에 나란히
+document.addEventListener("click", e => {
+  if (!e.target.closest("#sideBySideBtn") || !LAST_COMPARE) return;
+  openImgModal("보험금 지급기준표 나란히 보기", LAST_COMPARE.results.map(R => ({
+    title: `${R.name} (${R.start || "미상"})`,
+    images: (R.rows.find(r => r.id === "benefit") || {}).images || [],
+  })));
+});
+
+====================================================================================================
+# FILE: catalog.js  (상품 목록 자동 구성)
+====================================================================================================
+// 3단계 — 상품 목록 자동 구성
+// 불러온 기초서류를 상품별로 묶어 판매일자(버전)·판매상태·문서 구비·특징 표를 한눈에 보여주고 엑셀(CSV)로 내보냄.
+// 상품명·판매일자는 파일명/폴더명에서, 특징은 특징 사전(features.csv)으로 판정합니다.
+
+const CAT_TYPES = [["사업방법서", "사"], ["상품요약서", "요"], ["약관", "약"]];
+
+function kindOf(name) {
+  const n = norm(name);
+  const k = KIND_WORDS.find(([, re]) => re.test(n));
+  return k ? k[0] : "기타";
+}
+
+// 판매상태: 판매중/판매중지 폴더가 있으면 그 기준(근거 "폴더"), 없으면 판매일자로 추정(근거 "추정")
+function statusOf(v) {
+  const status = docSaleStatus({ start: v.start, end: v.end, saleFolder: v.saleFolder });
+  return { status, by: v.saleFolder ? "폴더" : "추정" };
+}
+
+function buildCatalog() {
+  const groups = new Map();
+  DOCS.forEach(d => {
+    const k = productKeyOf(d);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(d);
+  });
+  const products = [];
+  for (const [key, docs] of groups) {
+    const byStart = new Map();
+    docs.forEach(d => {
+      if (!byStart.has(d.start)) byStart.set(d.start, []);
+      byStart.get(d.start).push(d);
+    });
+    const versions = [...byStart].map(([start, vd]) => ({
+      start, docs: vd,
+      end: vd[0].end || "", explicitEnd: vd.some(d => d.explicitEnd),
+      types: new Set(vd.map(d => d.docType)),
+      features: new Set(FEATURES.filter(f => vd.some(d => docHasFeature(d, f))).map(f => f.id)),
+      errors: vd.filter(d => d.error).length,
+      saleFolder: vd.some(d => d.saleFolder === "stop") ? "stop" : vd.some(d => d.saleFolder === "on") ? "on" : "",
+      pending: vd.filter(d => SERVER_MODE && !d.indexed).length,
+    })).sort((a, b) => (b.start || "").localeCompare(a.start || "")); // 최신 판매일자 먼저
+    versions.forEach(v => { const s = statusOf(v); v.status = s.status; v.statusBy = s.by; });
+    const latest = versions[0];
+    const name = docs[0].productName || docs[0].name;
+    // 특징: 최신 판매일자에 있으면 'latest', 과거 판매일자에만 있으면 'past'
+    const feat = {};
+    FEATURES.forEach(f => {
+      feat[f.id] = latest.features.has(f.id) ? "latest" : versions.some(v => v.features.has(f.id)) ? "past" : "";
+    });
+    products.push({ key, name, kind: kindOf(name), versions, latest, status: latest.status, feat, nDocs: docs.length });
+  }
+  return products.sort((a, b) => a.name.localeCompare(b.name, "ko"));
+}
+
+// ---------- 화면 ----------
+let CATALOG = [];
+
+// 분류·특징 선택지 (목록을 새로 만들 때 갱신, 고른 값은 유지)
+function fillCatalogFilters() {
+  const kinds = [...new Set(CATALOG.map(p => p.kind))].sort();
+  const cur = $("catKind").value;
+  $("catKind").innerHTML = `<option value="">분류 전체</option>` + kinds.map(k => `<option${k === cur ? " selected" : ""}>${esc(k)}</option>`).join("");
+  if ($("catFeature").options.length !== FEATURES.length + 1) {
+    const curF = $("catFeature").value;
+    $("catFeature").innerHTML = `<option value="">특징 전체</option>` +
+      FEATURES.map(f => `<option value="${esc(f.id)}"${f.id === curF ? " selected" : ""}>${esc(f.name)}</option>`).join("");
+  }
+}
+
+function filteredCatalog() {
+  const q = norm($("catSearch").value), kind = $("catKind").value, st = $("catStatus").value, fid = $("catFeature").value;
+  return CATALOG.filter(p =>
+    (!q || norm(p.name).includes(q)) && (!kind || p.kind === kind) && (!st || p.status === st) &&
+    (!fid || p.feat[fid]));
+}
+
+const stBadge = (st, by = "") => `<span class="badge ${st === "판매중" ? "on" : st === "판매종료" ? "off" : "plan"}" title="${by === "폴더" ? "판매중/판매중지 폴더 기준" : "판매일자로 추정"}">${esc(st)}</span>${by === "추정" ? `<span class="est">추정</span>` : ""}`;
+
+function renderCatalog() {
+  if (!DOCS.length) {
+    $("catalogBody").innerHTML = `<div class="empty-state"><b>기초서류 폴더가 아직 연결되지 않았습니다</b>
+      start.bat으로 실행하면 지정 폴더가 자동으로 연결되고, 그렇지 않으면 상단 <b style="display:inline">기초서류 연결 → 폴더 선택</b>으로 고릅니다.<br>
+      <button type="button" id="emptyDbBtn">교육용 실습 (가상 샘플로 해 보기)</button></div>`;
+    return;
+  }
+  CATALOG = buildCatalog();
+  fillCatalogFilters();
+  const list = filteredCatalog();
+  const expand = $("catExpand").checked;
+  const pending = DOCS.filter(d => SERVER_MODE && !d.indexed).length;
+  const noDate = DOCS.filter(d => !d.start).length;
+  const fHead = FEATURES.map(f => `<th class="fcol" title="${esc(f.name)}">${esc(f.name)}</th>`).join("");
+  const fCells = (has, isProduct) => FEATURES.map(f => {
+    const v = isProduct ? has[f.id] : has.has(f.id) ? "latest" : "";
+    return `<td class="fcell">${v === "latest" ? `<span class="fm on" title="${isProduct ? "최신 판매일자에 있음" : "있음"}">●</span>`
+      : v === "past" ? `<span class="fm" title="과거 판매일자에만 있음">○</span>` : ""}</td>`;
+  }).join("");
+  const actions = (key, start) =>
+    `<button type="button" class="mini" data-analyze="${esc(key)}" data-start="${esc(start)}">분석</button>` +
+    `<button type="button" class="mini" data-compare-add="${esc(key)}" data-start="${esc(start)}">비교 담기</button>`;
+  const rows = list.map(p => {
+    if (!expand) {
+      const chips = p.versions.map(v => `<a href="#" class="vchip" data-analyze-link="${esc(p.key)}" data-start="${esc(v.start)}">${esc(v.start || "미상")}</a>`).join(" ");
+      const warn = [p.versions.some(v => v.errors) ? "본문 못 읽은 파일 있음" : "", p.versions.some(v => v.pending) ? "색인 중" : ""].filter(Boolean).join(", ");
+      return `<tr>
+        <td><a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(p.latest.start)}"><b>${esc(p.name)}</b></a>${warn ? `<div class="warn">${esc(warn)}</div>` : ""}</td>
+        <td>${esc(p.kind)}</td><td>${stBadge(p.status, p.latest.statusBy)}</td>
+        <td class="vlist">${chips}</td><td>${docLinksHtml(p.latest.docs)}</td>
+        ${fCells(p.feat, true)}<td class="actions">${actions(p.key, p.latest.start)}</td></tr>`;
+    }
+    // 판매일자별로 펼치기: 최신 판매일자 줄 아래에 이전 판매일자를 차례로, 상품이 바뀌는 곳은 굵은 선
+    return p.versions.map((v, i) => `<tr class="${i ? "ver-old" : "ver-new"}">
+        <td>${i ? `<span class="ver-mark">└ 이전 판매일자</span>` : `<a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(v.start)}"><b>${esc(p.name)}</b></a>`}</td><td>${i ? "" : esc(p.kind)}</td><td>${stBadge(v.status, v.statusBy)}</td>
+        <td class="nowrap"><a href="#" data-analyze-link="${esc(p.key)}" data-start="${esc(v.start)}">${esc(v.start || "미상")}</a>
+          <div class="path">~ ${esc(v.end || "")}${v.end && !v.explicitEnd ? " (추정)" : ""}</div></td>
+        <td>${docLinksHtml(v.docs)}${v.errors ? `<div class="warn">못 읽음 ${v.errors}</div>` : ""}</td>
+        ${fCells(v.features, false)}<td class="actions">${actions(p.key, v.start)}</td></tr>`).join("");
+  }).join("");
+  const nVersions = CATALOG.reduce((s, p) => s + p.versions.length, 0);
+  $("catalogBody").innerHTML = `
+    <p class="summary">상품 <b>${CATALOG.length}</b>개 · 판매일자(버전) ${nVersions}개 · PDF ${DOCS.length}개` +
+      (list.length !== CATALOG.length ? ` — 조건에 맞는 상품 <b>${list.length}</b>개` : "") +
+      (pending ? ` · <span class="warn">색인 중 ${pending}개는 특징이 아직 반영되지 않음</span>` : "") +
+      (noDate ? ` · <span class="warn">판매일자 인식 못함 ${noDate}개</span>` : "") + `</p>
+    <p class="note"><b>기초서류 링크</b>: 누르면 원문 PDF가 열립니다. 판매일자별로 펼치지 않은 화면은 <b>최신 판매일자(최근 개정)</b>의 서류이고, 펼치면 판매일자마다 그 판의 서류가 나옵니다 ·
+      ● 최신 판매일자에 있음 · ○ 과거 판매일자에만 있음 ·
+      판매상태는 판매중/판매중지 폴더 기준(폴더 구분이 없으면 판매일자로 추정해 '추정' 표시) · 종료일은 다음 판매일자 전날로 추정 · 상품명·판매일자를 누르면 상품 분석</p>
+    <div class="table-scroll"><table class="catalog">
+      <thead><tr><th>상품명</th><th>분류</th><th>상태</th><th>${expand ? "판매일자" : "판매일자(최신순)"}</th><th>${expand ? "기초서류" : "기초서류 (최신 판매일자)"}</th>${fHead}<th></th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="${FEATURES.length + 6}" class="empty">조건에 맞는 상품이 없습니다.</td></tr>`}</tbody>
+    </table></div>`;
+}
+
+// 엑셀(CSV): 판매일자(버전) 단위 한 줄
+function catalogCsv() {
+  const q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const head = ["상품명", "분류", "판매개시일", "판매종료일", "종료일 구분", "판매상태", "판매상태 근거", "최신 판매일자 여부",
+    ...CAT_TYPES.map(([t]) => t), ...FEATURES.map(f => f.name), "파일 수", "본문 못 읽은 파일", "파일 경로"];
+  const rows = filteredCatalog().flatMap(p => p.versions.map((v, i) => [
+    p.name, p.kind, v.start || "미상", v.end, v.end ? (v.explicitEnd ? "폴더명" : "추정") : "", v.status, v.statusBy === "폴더" ? "판매중/판매중지 폴더" : "판매일자로 추정", i === 0 ? "Y" : "",
+    ...CAT_TYPES.map(([t]) => (v.types.has(t) ? "Y" : "")), ...FEATURES.map(f => (v.features.has(f.id) ? "Y" : "")),
+    v.docs.length, v.errors || "", v.docs.map(d => d.path).join(" | ")]));
+  return "﻿" + [head, ...rows].map(r => r.map(q).join(",")).join("\r\n");
+}
+
+// ---------- 이벤트 ----------
+["catSearch"].forEach(id => $(id).addEventListener("input", renderCatalog));
+["catKind", "catStatus", "catFeature", "catExpand"].forEach(id => $(id).addEventListener("change", renderCatalog));
+$("csvCatalogBtn").addEventListener("click", () => download(`product-list_${TODAY}.csv`, catalogCsv()));
+document.addEventListener("click", e => {
+  const a = e.target.closest("a[data-analyze-link]");
+  if (!a) return;
+  e.preventDefault();
+  showAnalysis(a.dataset.analyzeLink, a.dataset.start);
+});
+
+====================================================================================================
+# FILE: product-db.js  (가상 상품 DB 주요사항 요약)
+====================================================================================================
+// 가상 상품 DB 상세 — 상품 행을 누르면 주요사항 요약 · 기본정보 · 담보 · 심의 문서 · 포트폴리오(월별 보유계약)
+// 요약은 DB 항목을 정해진 순서로 이어 붙이는 규칙 기반 요약입니다(AI 미사용, 외부 전송 없음).
+
+const won = v => (v === "" || v == null ? "-" : Number(v).toLocaleString("ko-KR"));
+const pct = (a, b) => (b ? ((a - b) / b * 100).toFixed(1) : "0.0");
+
+function productSummary(p, covs, docs, port) {
+  const st = saleStatus(p);
+  const main = covs.filter(c => c.main_rider === "주계약").map(c => c.coverage_name);
+  const riders = covs.filter(c => c.main_rider !== "주계약").length;
+  const reduce = covs.filter(c => +c.reduction_months > 0).map(c => `${c.coverage_name} ${c.reduction_months}개월 ${c.reduction_pct}%`);
+  const wait = covs.filter(c => +c.waiting_days > 0).map(c => `${c.coverage_name} ${c.waiting_days}일`);
+  const last = port[port.length - 1], first = port[0];
+  const parts = [
+    `${p.category} · ${p.benefit_type} · ${p.channel} 채널, ${p.sale_start} ~ ${p.sale_end || "현재"} 판매(${st}, ${p.revision_no}차).`,
+    `예정이율 ${p.assumed_rate}% ${p.rate_type}형, ${p.refund_type}${p.renewable === "Y" ? " · 갱신형" : " · 비갱신형"}.`,
+    p.key_features ? `주요 특징: ${p.key_features.split(";").map(s => s.trim()).filter(Boolean).join(", ")}.` : "",
+    covs.length ? `담보 ${covs.length}개 — 주계약 ${main.join(", ") || "-"}${riders ? `, 특약 ${riders}개` : ""}.` : "",
+    reduce.length ? `감액: ${reduce.join(", ")}.` : "",
+    wait.length ? `면책(대기)기간: ${wait.join(", ")}.` : "",
+    last ? `${last.base_month} 기준 보유 ${won(last.policy_count)}건 · 연납보험료 ${last.annual_premium_100m}억 · 책임준비금 ${last.reserve_100m}억` +
+      (first && first !== last ? ` (${first.base_month} 대비 건수 ${pct(+last.policy_count, +first.policy_count)}%).` : ".") : "",
+    docs.length ? `관련 문서 ${docs.length}건(최근: ${docs[docs.length - 1].doc_date} ${docs[docs.length - 1].title}).` : "",
+  ];
+  return parts.filter(Boolean).join(" ");
+}
+
+function renderDbDetail(code) {
+  const box = $("dbDetail");
+  const p = DB.products.find(x => x.product_code === code);
+  if (!p) { box.hidden = true; return; }
+  const covs = DB.coverages.filter(c => c.product_code === code);
+  const docs = DB.documents.filter(d => d.product_code === code).sort((a, b) => a.doc_date.localeCompare(b.doc_date));
+  const port = DB.portfolio.filter(r => r.product_code === code).sort((a, b) => a.base_month.localeCompare(b.base_month));
+  const kv = [["상품코드", p.product_code], ["상품군", p.product_group], ["분류", p.category], ["보장/저축", p.benefit_type],
+    ["판매채널", p.channel], ["판매기간", `${p.sale_start} ~ ${p.sale_end || ""}`], ["판매상태", saleStatus(p)], ["개정차수", `${p.revision_no}차`],
+    ["해지환급형", p.refund_type], ["갱신", p.renewable === "Y" ? "갱신형" : "비갱신형"], ["금리", `${p.rate_type} ${p.assumed_rate}%`], ["상품위원회", p.committee_date]];
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="analysis-head"><h2>${esc(p.product_name)} <small class="muted">${esc(p.product_code)}</small></h2>
+      <div class="buttons"><button type="button" id="dbDetailClose">닫기</button></div></div>
+    <div class="dbsum"><b>주요사항 요약</b> <span class="muted">(DB 항목 자동 정리 · AI 미사용)</span><p>${esc(productSummary(p, covs, docs, port))}</p></div>
+    <h3>기본 정보</h3>
+    <table class="kv kv4"><tbody>${kv.reduce((rows, [k, v], i) => {
+      if (i % 2 === 0) rows.push([]);
+      rows[rows.length - 1].push(`<th>${esc(k)}</th><td>${esc(v)}</td>`);
+      return rows;
+    }, []).map(r => `<tr>${r.join("")}</tr>`).join("")}</tbody></table>
+    <h3>담보 (${covs.length}개)</h3>
+    <div class="table-scroll"><table><thead><tr><th>담보명</th><th>구분</th><th>지급사유</th><th>지급률</th><th>감액</th><th>면책(대기)</th><th>갱신주기</th><th>가입나이</th></tr></thead><tbody>
+      ${covs.map(c => `<tr><td><b>${esc(c.coverage_name)}</b></td><td>${esc(c.main_rider)}</td><td>${esc(c.payment_reason)}</td>
+        <td class="num">${esc(c.payment_pct)}%</td><td class="num">${+c.reduction_months ? `${esc(c.reduction_months)}개월 ${esc(c.reduction_pct)}%` : "-"}</td>
+        <td class="num">${+c.waiting_days ? `${esc(c.waiting_days)}일` : "-"}</td><td class="num">${+c.renewal_years ? `${esc(c.renewal_years)}년` : "-"}</td>
+        <td class="num">${esc(c.min_age)}~${esc(c.max_age)}세</td></tr>`).join("") || `<tr><td colspan="8" class="empty">담보 정보 없음</td></tr>`}
+    </tbody></table></div>
+    <h3>포트폴리오 (월별 보유계약)</h3>
+    <div class="table-scroll"><table><thead><tr><th>기준월</th><th>보유건수</th><th>가입금액(억)</th><th>연납보험료(억)</th><th>책임준비금(억)</th></tr></thead><tbody>
+      ${port.map(r => `<tr><td>${esc(r.base_month)}</td><td class="num">${won(r.policy_count)}</td><td class="num">${esc(r.sum_insured_100m)}</td>
+        <td class="num">${esc(r.annual_premium_100m)}</td><td class="num">${esc(r.reserve_100m)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">포트폴리오 정보 없음</td></tr>`}
+    </tbody></table></div>
+    <h3>관련 문서 (${docs.length}건)</h3>
+    ${docs.map(d => `<div class="pcard"><h3 style="font-size:15px">${esc(d.title)}</h3><div class="meta">${esc(d.doc_date)} · ${esc(d.doc_type)}</div><p class="line">${esc(d.content)}</p></div>`).join("") || `<p class="empty">관련 문서 없음</p>`}`;
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("results").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-code]");
+  if (!tr) return;
+  document.querySelectorAll("#results tr.sel").forEach(x => x.classList.remove("sel"));
+  tr.classList.add("sel");
+  renderDbDetail(tr.dataset.code);
+});
+document.addEventListener("click", e => {
+  if (!e.target.closest("#dbDetailClose")) return;
+  $("dbDetail").hidden = true;
+  document.querySelectorAll("#results tr.sel").forEach(x => x.classList.remove("sel"));
+});
+
+====================================================================================================
+# FILE: chat.js  (AI 질문 (질문→조건→앱 계산→답변))
+====================================================================================================
+// AI 질문 — 기초서류에 대해 자유롭게 묻는 챗봇 화면
+// 질문 해석·답변 문장은 내 PC의 로컬 AI(Ollama, 127.0.0.1)가 하고, 개수·평균 같은 숫자는 앱이 직접 계산합니다.
+//   1) 질문 → 조건(JSON)     : 로컬 AI (없으면 규칙 해석)
+//   2) 조건 → 계산·근거 찾기 : 앱 (상품 목록·원문 문장·문서에서 뽑은 값)
+//   3) 계산 결과 → 답변 문장 : 로컬 AI (없으면 정해진 문장)
+// AI가 쓴 문장의 숫자가 계산 결과에 없으면 '확인 필요'로 표시합니다. 외부로 아무것도 보내지 않습니다.
+
+const AI = { ok: false, models: [], model: "", error: "" };
+const AI_KINDS = KIND_WORDS.map(([k]) => k);
+const AI_STATUS = ["판매중", "판매종료"];
+
+// 문서에서 뽑는 값 — words 근처(뒤쪽 80자)에서 읽음
+const AI_FIELDS = {
+  "예정이율": { words: ["예정이율", "적용이율"], unit: "%",
+    parse: w => {
+      const nums = [...w.matchAll(/(\d+(?:\.\d+)?)%/g)].map(m => +m[1]);
+      if (!nums.length) return null;
+      return /→|->|에서.{0,10}로/.test(w.slice(0, 40)) ? nums[Math.min(nums.length - 1, 1)] : nums[0]; // '2.75%→2.25%'는 바뀐 값
+    } },
+  "가입나이": { words: ["가입나이", "가입연령"], unit: "세",
+    parse: w => { const m = w.match(/(\d+)세?~(?:만)?(\d+)세/); return m ? +m[2] : null; }, note: "최고 가입나이" },
+  "보험기간": { words: ["보험기간"], text: true },
+  "납입기간": { words: ["납입기간"], text: true },
+};
+
+// ---------- 로컬 AI 연결 (serve.py가 127.0.0.1:11434 의 Ollama로만 전달) ----------
+async function aiCheck() {
+  if (!SERVER_MODE) { AI.ok = false; AI.error = DEMO_MODE ? "웹 데모" : "파일로 연 화면"; renderAiStatus(); return; }
+  try {
+    const r = await api("api/ai/status");
+    AI.ok = r.ok; AI.models = r.models || []; AI.error = r.error || "";
+    let saved = "";
+    try { saved = localStorage.getItem("aiModel") || ""; } catch (e) { /* 저장소 막힘 */ }
+    AI.model = AI.models.includes(saved) ? saved : r.recommended || AI.models[0] || "";
+  } catch (e) { AI.ok = false; AI.error = e.message; }
+  renderAiStatus();
+}
+
+async function aiChat(messages, schema, temperature = 0) {
+  const r = await api("api/ai/chat", { model: AI.model, messages, format: schema || undefined, options: { temperature } });
+  return r.content || "";
+}
+
+function renderAiStatus() {
+  const box = $("aiStatus");
+  if (AI.ok && AI.model) {
+    box.className = "ai-status on";
+    box.innerHTML = `<b>로컬 AI 연결됨</b> · 모델 ` +
+      (AI.models.length > 1 ? `<select id="aiModel">${AI.models.map(m => `<option${m === AI.model ? " selected" : ""}>${esc(m)}</option>`).join("")}</select>` : `<b>${esc(AI.model)}</b>`) +
+      ` · 내 PC 안에서만 동작 <label class="ai-opt"><input type="checkbox" id="aiWrite" checked> 답변 문장도 AI가 작성 (끄면 더 빠름)</label>`;
+  } else {
+    box.className = "ai-status off";
+    const why = AI.error === "웹 데모" ? "웹 데모에서는 로컬 AI를 쓸 수 없습니다"
+      : AI.error === "파일로 연 화면" ? "start.bat으로 실행해야 로컬 AI를 쓸 수 있습니다"
+      : AI.ok ? "Ollama는 켜져 있지만 받은 모델이 없습니다 (ai-setup.bat 실행)"
+      : "로컬 AI(Ollama)가 꺼져 있거나 설치되지 않았습니다";
+    box.innerHTML = `<b>규칙 해석으로 답합니다</b> — ${esc(why)}. 개수·목록·평균 같은 정해진 질문은 그대로 됩니다. ` +
+      `${SERVER_MODE ? `<button type="button" class="mini" id="aiRecheck">다시 확인</button>` : ""} <a href="#aiSetup" id="aiSetupLink">로컬 AI 설치 방법</a>`;
+  }
+}
+
+document.addEventListener("change", e => {
+  if (e.target.id !== "aiModel") return;
+  AI.model = e.target.value;
+  try { localStorage.setItem("aiModel", AI.model); } catch (err) { /* 저장소 막힘 */ }
+});
+document.addEventListener("click", e => {
+  if (e.target.closest("#aiRecheck")) aiCheck();
+  if (e.target.closest("#aiSetupLink")) { e.preventDefault(); $("aiSetup").open = true; $("aiSetup").scrollIntoView({ block: "start" }); }
+});
+
+// ---------- 1) 질문 → 조건 ----------
+const PLAN_KEYS = ["action", "category", "status", "year_from", "year_to", "product", "feature", "text", "field", "group_by"];
+const PLAN_ACTIONS = ["count", "list", "average", "max", "min", "find", "explain"];
+const PLAN_GROUPS = ["", "연도", "판매상태", "분류"];
+
+const planSchema = () => ({
+  type: "object",
+  properties: {
+    action: { type: "string", enum: PLAN_ACTIONS },
+    category: { type: "string", enum: ["", ...AI_KINDS] },
+    status: { type: "string", enum: ["", ...AI_STATUS] },
+    year_from: { type: "string" }, year_to: { type: "string" },
+    product: { type: "string" },
+    feature: { type: "string", enum: ["", ...FEATURES.map(f => f.name)] },
+    text: { type: "string" },
+    field: { type: "string", enum: ["", ...Object.keys(AI_FIELDS)] },
+    group_by: { type: "string", enum: PLAN_GROUPS },
+  },
+  required: PLAN_KEYS,
+});
+
+const plannerPrompt = () => `너는 보험 기초서류 검색 앱의 질문 해석기다. 사용자의 질문을 아래 JSON 조건으로 바꿔라. JSON만 출력한다.
+- action: count(개수) | list(목록) | average(평균) | max(최고) | min(최저) | find(문서에 어떤 내용이 있는 상품 찾기) | explain(용어 설명 등 데이터와 무관한 질문)
+- category: 상품 분류. 다음 중 하나 또는 "": ${AI_KINDS.join(", ")}
+- status: "판매중" | "판매종료"("판매중지", "단종"도 판매종료) | ""
+- year_from, year_to: 판매개시 연도 범위 (예: "2020"). 없으면 ""
+- product: 특정 상품명 일부 (예: "든든"). 없으면 ""
+- feature: 다음 특징 중 하나 또는 "": ${FEATURES.map(f => f.name).join(", ")}
+- text: 문서 문장에서 찾아야 할 내용(특징 목록으로 표현이 안 될 때). 예: "사망 시 이미 납입한 보험료에서 인출금액을 차감". 없으면 ""
+- field: 문서에서 읽을 값: ${Object.keys(AI_FIELDS).join(", ")} 또는 "". 평균·최고·최저는 field가 꼭 있어야 한다.
+- group_by: "연도" | "판매상태" | "분류" | "" ("연도별로", "상태별로" 같은 말이 있을 때)
+예) "종신보험 판매중지 상품 몇 개야?" → {"action":"count","category":"종신","status":"판매종료","year_from":"","year_to":"","product":"","feature":"","text":"","field":"","group_by":""}
+예) "판매중인 상품의 평균 예정이율은?" → {"action":"average","category":"","status":"판매중","year_from":"","year_to":"","product":"","feature":"","text":"","field":"예정이율","group_by":""}
+예) "2023년 이후 나온 저해지형 상품 알려줘" → {"action":"list","category":"","status":"","year_from":"2023","year_to":"","product":"","feature":"저해지형","text":"","field":"","group_by":""}
+예) "유사암 진단 시 가입금액의 10%를 주는 상품은?" → {"action":"find","category":"","status":"","year_from":"","year_to":"","product":"","feature":"","text":"유사암 진단 시 가입금액의 10% 지급","field":"","group_by":""}
+이전 질문의 조건이 주어지면, "그 중", "그럼" 같은 이어지는 질문은 이전 조건을 이어받아 바뀐 부분만 고친다.`;
+
+// AI 응답을 검사해 허용된 값만 남김
+function cleanPlan(p) {
+  const out = {};
+  PLAN_KEYS.forEach(k => { out[k] = typeof p?.[k] === "string" ? p[k].trim() : ""; });
+  if (!PLAN_ACTIONS.includes(out.action)) out.action = "list";
+  if (/중지|단종|종료/.test(out.status)) out.status = "판매종료";
+  if (!AI_STATUS.includes(out.status)) out.status = "";
+  if (!AI_KINDS.includes(out.category)) out.category = "";
+  if (!FEATURES.some(f => f.name === out.feature)) out.feature = "";
+  if (!AI_FIELDS[out.field]) out.field = "";
+  if (!PLAN_GROUPS.includes(out.group_by)) out.group_by = "";
+  ["year_from", "year_to"].forEach(k => { const m = out[k].match(/(19|20)\d{2}/); out[k] = m ? m[0] : ""; });
+  if (["average", "max", "min"].includes(out.action) && !out.field) out.action = "list";
+  return out;
+}
+
+// 로컬 AI가 없을 때: 정해진 표현으로 해석
+function rulePlan(q) {
+  const Q = interpretQuestion(q, true), raw = norm(q);
+  const p = { action: "list", category: Q.category, status: Q.status, year_from: Q.from.slice(0, 4), year_to: Q.to.slice(0, 4),
+    product: "", feature: Q.features[0] ? Q.features[0].name : "", text: "", field: "", group_by: "" };
+  if (/몇개|몇건|몇종|개수|건수|얼마나있/.test(raw)) p.action = "count";
+  if (/평균/.test(raw)) p.action = "average";
+  else if (/최고|최대|가장높|제일높/.test(raw)) p.action = "max";
+  else if (/최저|최소|가장낮|제일낮/.test(raw)) p.action = "min";
+  p.field = Object.keys(AI_FIELDS).find(f => AI_FIELDS[f].words.some(w => raw.includes(w))) || "";
+  const g = raw.match(/(연도|년도|판매상태|상태|분류)별/);
+  if (g) p.group_by = g[1] === "년도" ? "연도" : g[1] === "상태" ? "판매상태" : g[1];
+  const y = raw.match(/((?:19|20)\d{2})년(이후|부터)/);
+  if (y) { p.year_from = y[1]; p.year_to = ""; }
+  const y2 = raw.match(/((?:19|20)\d{2})년(이전|까지)/);
+  if (y2) { p.year_to = y2[1]; p.year_from = ""; }
+  const prod = productInQuestion(raw);
+  if (prod) p.product = prod;
+  // "예정이율이 뭐야?"처럼 용어 뜻을 묻는 질문
+  if (p.field && !prod && p.action === "list" && /뭐야|뭔가요|무엇인가|무엇이야|이란|란뭐|뜻|의미|설명해/.test(raw)) p.action = "explain";
+  // 남은 핵심어가 2개 이상이면 문서 문장에서 찾을 내용
+  const rest = questionTerms(q).filter(t => !/^(몇|개수|건수|평균|최고|최저|최대|최소|가장|제일|목록|전체|모두|얼마|연도별|상태별|분류별|이후|이전|부터|까지)/.test(t) &&
+    !Object.values(AI_FIELDS).some(f => f.words.some(w => t.includes(w))) && !(prod && prod.includes(t)) &&
+    !Q.features.some(f => f.phrases.some(ph => t.includes(ph) || ph.includes(t))));
+  if (rest.length >= 2) { p.text = rest.join(" "); if (p.action === "list") p.action = "find"; }
+  return cleanPlan(p);
+}
+
+// 질문 속 상품명: 상품명과 가장 길게 겹치는 부분(4글자 이상, '종신보험' 같은 분류 말만 겹치면 제외)
+function productInQuestion(raw) {
+  const common = (a, b) => {
+    let best = "";
+    for (let i = 0; i < a.length; i++) for (let j = i + best.length + 1; j <= a.length; j++) {
+      if (b.includes(a.slice(i, j))) best = a.slice(i, j); else break;
+    }
+    return best;
+  };
+  let best = "";
+  for (const x of CATALOG_FOR_AI()) {
+    const c = common(raw, norm(x.name));
+    const core = c.replace(/보험|종신|정기|건강|연금|저축|변액|무배당|\(무\)|상품/g, "");
+    if (c.length >= 4 && core.length >= 2 && c.length > best.length) best = c;
+  }
+  return best;
+}
+
+// ---------- 2) 조건 → 계산 ----------
+const CATALOG_FOR_AI = () => (CATALOG.length ? CATALOG : buildCatalog());
+
+// 문서에서 단어 근처 원문 (서버 모드는 색인에서, 그 밖에는 메모리 본문에서)
+async function nearWord(docs, words) {
+  const out = new Map(); // doc → [{page, text}]
+  if (SERVER_MODE) {
+    const ids = docs.filter(d => d.id).map(d => d.id), byId = new Map(docs.map(d => [d.id, d]));
+    const res = ids.length ? (await api("api/near", { ids, words })).hits : [];
+    res.forEach(h => { const d = byId.get(h.id); if (d) { if (!out.has(d)) out.set(d, []); out.get(d).push(h); } });
+  } else {
+    docs.forEach(d => (d.pages || []).forEach((t, pi) => {
+      const comp = norm(t);
+      for (const w of words) {
+        const i = comp.indexOf(w);
+        if (i !== -1) { if (!out.has(d)) out.set(d, []); out.get(d).push({ page: pi + 1, text: comp.slice(i, i + 80) }); break; }
+      }
+    }));
+  }
+  return out;
+}
+
+// 상품별 값: 최신 판매일자 문서부터 찾아 보고, 없으면 이전 판매일자로
+async function fieldValues(products, fieldName) {
+  const f = AI_FIELDS[fieldName];
+  const docs = products.flatMap(p => p.versions.flatMap(v => v.docs));
+  const near = await nearWord(docs, f.words.map(norm));
+  const res = new Map();
+  for (const p of products) {
+    let found = null;
+    for (const v of p.versions) {
+      for (const d of [...v.docs].sort(byDocPriority)) {
+        for (const h of near.get(d) || []) {
+          const w = norm(h.text);
+          const value = f.text ? w.slice(0, 60) : f.parse(w);
+          if (value !== null && value !== "") { found = { value, doc: d, page: h.page, text: h.text, start: v.start, latest: v === p.versions[0] }; break; }
+        }
+        if (found) break;
+      }
+      if (found) break;
+    }
+    res.set(p.key, found);
+  }
+  return res;
+}
+
+const yearOf = p => (p.versions[p.versions.length - 1].start || "").slice(0, 4); // 최초 판매개시 연도
+
+async function executePlan(plan) {
+  let products = CATALOG_FOR_AI();
+  const notes = [];
+  if (plan.category) products = products.filter(p => p.kind === plan.category);
+  if (plan.status) products = products.filter(p => p.status === plan.status);
+  if (plan.year_from) products = products.filter(p => yearOf(p) && yearOf(p) >= plan.year_from);
+  if (plan.year_to) products = products.filter(p => yearOf(p) && yearOf(p) <= plan.year_to);
+  if (plan.product) products = products.filter(p => norm(p.name).includes(norm(plan.product).replace(/^\(무\)/, "")));
+  if (plan.feature) {
+    const f = FEATURES.find(x => x.name === plan.feature);
+    products = products.filter(p => f && p.feat[f.id]);
+  }
+  // 문서 문장 조건: 핵심어가 한 문장에 모인 상품만
+  const evidence = new Map();
+  if (plan.text) {
+    const terms = questionTerms(plan.text);
+    if (terms.length) {
+      const r = await sentenceAnswer({ Q: { terms }, form: { keyword: "", from: "", to: "", category: "", status: "", docType: "" } });
+      groupSentenceHits(r.hits).forEach(g => evidence.set(g.key, g.hits));
+      products = products.filter(p => evidence.has(p.key));
+      notes.push(`문장 조건: 핵심어 ${terms.join("·")} 중 ${termsNeeded(terms.length)}개 이상이 한 문장에`);
+    }
+  }
+  const values = plan.field ? await fieldValues(products, plan.field) : new Map();
+  const result = { plan, products, evidence, values, total: products.length, notes };
+  if (plan.field && !AI_FIELDS[plan.field].text) {
+    const nums = products.map(p => values.get(p.key)).filter(Boolean).map(v => v.value);
+    result.found = nums.length;
+    result.missing = products.length - nums.length;
+    if (nums.length) {
+      const round = x => Math.round(x * 1000) / 1000;
+      result.stat = { average: round(nums.reduce((a, b) => a + b, 0) / nums.length), max: Math.max(...nums), min: Math.min(...nums) };
+    }
+  }
+  if (plan.group_by) {
+    const keyOf = p => plan.group_by === "연도" ? (yearOf(p) || "미상") : plan.group_by === "판매상태" ? p.status : p.kind;
+    const groups = {};
+    products.forEach(p => { groups[keyOf(p)] = (groups[keyOf(p)] || 0) + 1; });
+    result.groups = Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
+  }
+  return result;
+}
+
+// ---------- 3) 계산 결과 → 답변 ----------
+const planText = p => [
+  p.category && `분류 ${p.category}`, p.status && `판매상태 ${p.status}`,
+  (p.year_from || p.year_to) && `판매개시 ${p.year_from || "…"}~${p.year_to || "…"}년`,
+  p.product && `상품 ${p.product}`, p.feature && `특징 ${p.feature}`, p.text && `문서 내용 "${p.text}"`,
+  p.field && `값 ${p.field}`, p.group_by && `${p.group_by}별`].filter(Boolean);
+
+function factsFor(result) {
+  const p = result.plan, f = AI_FIELDS[p.field];
+  const facts = {
+    조건: planText(p).join(", ") || "전체", 기준: `연결된 기초서류 PDF ${DOCS.length}개 · 상품 ${CATALOG_FOR_AI().length}개`,
+    상품수: result.total,
+    상품: result.products.slice(0, 25).map(x => {
+      const v = result.values.get(x.key), ev = result.evidence.get(x.key);
+      return { 상품명: x.name, 분류: x.kind, 판매상태: x.status, 최신판매일자: x.latest.start,
+        ...(v ? { [p.field]: f.text ? v.value : `${v.value}${f.unit}`, 근거: `${v.doc.docType} p.${v.page}` } : p.field ? { [p.field]: "문서에서 못 찾음" } : {}),
+        ...(ev ? { 근거문장: ev[0].text.slice(0, 160), 문장근거: `${ev[0].doc.docType} p.${ev[0].page}` } : {}) };
+    }),
+  };
+  if (result.total > 25) facts.생략 = `외 ${result.total - 25}개`;
+  if (result.stat) Object.assign(facts, { [`${p.field} 값을 찾은 상품 수`]: result.found, [`${p.field} 못 찾은 상품 수`]: result.missing,
+    평균: `${result.stat.average}${f.unit}`, 최고: `${result.stat.max}${f.unit}`, 최저: `${result.stat.min}${f.unit}` });
+  if (result.groups) facts[`${p.group_by}별 상품 수`] = Object.fromEntries(result.groups);
+  return facts;
+}
+
+function templateAnswer(result) {
+  const p = result.plan, f = AI_FIELDS[p.field], cond = planText(p).filter(x => !x.startsWith("값 ")).join(", ") || "전체";
+  if (p.action === "explain") return "연결된 기초서류에서 답할 수 있는 질문(개수·목록·평균·문서 내용 찾기)이 아닙니다. 용어 설명 같은 질문은 로컬 AI가 연결되어 있을 때 답합니다.";
+  if (!result.total) return `조건(${cond})에 맞는 상품을 찾지 못했습니다.`;
+  let s = `조건(${cond})에 맞는 상품은 ${result.total}개입니다.`;
+  if (result.groups) s += " " + result.groups.map(([k, n]) => `${k} ${n}개`).join(", ") + ".";
+  if (f && !f.text) {
+    const found = result.products.filter(x => result.values.get(x.key));
+    const valOf = x => `${result.values.get(x.key).value}${f.unit}`;
+    const src = x => { const v = result.values.get(x.key); return `${v.doc.docType}(${v.start}) p.${v.page}`; };
+    const fname = p.field + (f.note ? `(${f.note})` : "");
+    if (!found.length) s += ` 그중 문서에서 ${p.field} 값을 찾은 상품이 없습니다.`;
+    else if (found.length === 1) s += ` ${found[0].name}의 ${fname}은 ${valOf(found[0])}입니다(${src(found[0])}).`;
+    else if (["max", "min"].includes(p.action)) {
+      const target = result.stat[p.action];
+      const who = found.filter(x => result.values.get(x.key).value === target).map(x => x.name);
+      s += ` 문서에서 값을 찾은 ${found.length}개 상품 중 ${fname}이 가장 ${p.action === "max" ? "높은" : "낮은"} 상품은 ${who.join(", ")}(${target}${f.unit})입니다.`;
+    } else if (p.action === "average") s += ` 문서에서 ${fname} 값을 찾은 ${found.length}개 상품의 평균은 ${result.stat.average}${f.unit}입니다.`;
+    else s += ` 문서에서 ${fname} 값을 찾은 ${found.length}개 상품은 ${result.stat.min}${f.unit} ~ ${result.stat.max}${f.unit}입니다.`;
+    if (found.length && result.missing) s += ` (값을 못 찾은 ${result.missing}개 제외)`;
+  }
+  return s;
+}
+
+async function aiAnswer(question, result) {
+  if (result.plan.action === "explain") {
+    return aiChat([{ role: "system", content: "보험 용어를 3문장 이내 한국어로 쉽게 설명한다. 회사·상품 이름이나 숫자를 지어내지 않는다." },
+      { role: "user", content: question }], null, 0.2);
+  }
+  return aiChat([
+    { role: "system", content: "너는 보험 기초서류 검색 앱의 답변 작성기다. 아래 '계산 결과'만 근거로 한국어 2~5문장으로 답한다. " +
+      "숫자는 계산 결과에 있는 값만 그대로 쓰고 새로 계산하거나 추측하지 않는다. 상품이 많으면 몇 개만 예로 든다. 값을 못 찾은 상품이 있으면 그 사실도 말한다. " +
+      "결과가 0개면 찾지 못했다고 답한다. 표나 목록 기호 없이 문장으로 쓴다." },
+    { role: "user", content: `질문: ${question}\n\n계산 결과(JSON):\n${JSON.stringify(factsFor(result), null, 1)}` },
+  ], null, 0.2);
+}
+
+// AI 문장 속 숫자가 계산 결과·질문에 있는지 확인
+function numberCheck(text, result, question) {
+  const known = new Set((JSON.stringify(factsFor(result)) + " " + question).match(/\d+(?:\.\d+)?/g) || []);
+  return [...new Set((text.match(/\d+(?:\.\d+)?/g) || []).filter(n => !known.has(n)))];
+}
+
+// ---------- 화면 ----------
+const AI_HISTORY = []; // {q, plan}
+let aiBusy = false;
+
+function resultHtml(result) {
+  const p = result.plan, f = AI_FIELDS[p.field];
+  const chips = planText(p).map(t => `<span class="chip">${esc(t)}</span>`).join("") || `<span class="chip">조건 없음 (전체)</span>`;
+  let html = `<div class="ai-cond">해석한 조건: ${chips}</div>`;
+  if (result.notes.length) html += `<div class="note">${esc(result.notes.join(" · "))}</div>`;
+  if (result.groups) html += `<div class="note">${esc(p.group_by)}별: ${result.groups.map(([k, n]) => `${esc(k)} <b>${n}</b>개`).join(" · ")}</div>`;
+  if (!result.products.length) return html;
+  const SHOW = 30;
+  html += `<div class="table-scroll"><table class="ai-table"><thead><tr><th>상품명</th><th>분류</th><th>판매상태</th><th>최신 판매일자</th>` +
+    (p.field ? `<th>${esc(p.field)}</th>` : "") + (result.evidence.size ? `<th>근거 문장</th>` : "") + `<th>기초서류</th></tr></thead><tbody>` +
+    result.products.slice(0, SHOW).map(x => {
+      const v = result.values.get(x.key), ev = result.evidence.get(x.key);
+      const link = (d, page, label) => `<a href="#" data-open="${DOCS.indexOf(d)}" data-page="${page}">${esc(label)}</a>`;
+      const vCell = !p.field ? "" : `<td>${v ? `<b>${esc(f.text ? v.value : v.value + f.unit)}</b><div class="path">${link(v.doc, v.page, `${v.doc.docType}(${v.start}) p.${v.page}`)}${v.latest ? "" : " · 이전 판"}</div>` : `<span class="muted">문서에서 못 찾음</span>`}</td>`;
+      const eCell = !result.evidence.size ? "" : `<td>${ev ? `${link(ev[0].doc, ev[0].page, `${ev[0].doc.docType} p.${ev[0].page}`)} ${highlight(ev[0].text, ev[0].matched)}` : ""}</td>`;
+      return `<tr><td><button type="button" class="linkbtn" data-analyze="${esc(x.key)}" data-start="${esc(x.latest.start)}">${esc(x.name)}</button></td>` +
+        `<td>${esc(x.kind)}</td><td>${stBadge(x.status, x.latest.statusBy)}</td><td>${esc(x.latest.start || "")}</td>${vCell}${eCell}<td>${docLinksHtml(x.latest.docs)}</td></tr>`;
+    }).join("") + `</tbody></table></div>` + (result.total > SHOW ? `<p class="note">외 ${result.total - SHOW}개</p>` : "");
+  return html;
+}
+
+function addTurn(q) {
+  const el = document.createElement("div");
+  el.className = "ai-turn";
+  el.innerHTML = `<div class="ai-q">${esc(q)}</div><div class="ai-a"><p class="muted ai-progress">질문 해석 중…</p></div>`;
+  $("aiLog").appendChild(el);
+  el.scrollIntoView({ block: "end", behavior: "smooth" });
+  return el.querySelector(".ai-a");
+}
+
+async function askAi(q) {
+  if (aiBusy || !q.trim()) return;
+  if (!DOCS.length) { addTurn(q).innerHTML = `<p class="warn">기초서류가 아직 연결되지 않았습니다. 연결(또는 샘플 읽기)이 끝난 뒤 물어보세요.</p>`; return; }
+  aiBusy = true; $("aiSend").disabled = true;
+  const box = addTurn(q), t0 = performance.now();
+  const progress = t => { const p = box.querySelector(".ai-progress"); if (p) p.textContent = t; };
+  const useAi = AI.ok && AI.model;
+  let plan, by = "규칙 해석", answer, warn = "";
+  try {
+    if (useAi) {
+      progress(`1/3 로컬 AI(${AI.model})가 질문을 조건으로 바꾸는 중… (PC 사양에 따라 수십 초)`);
+      const prev = AI_HISTORY.slice(-1).map(h => `이전 질문: ${h.q}\n이전 조건: ${JSON.stringify(h.plan)}`).join("\n");
+      try {
+        const raw = await aiChat([{ role: "system", content: plannerPrompt() }, { role: "user", content: (prev ? prev + "\n\n" : "") + "질문: " + q }], planSchema());
+        plan = cleanPlan(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
+        by = `로컬 AI 해석 (${AI.model})`;
+      } catch (e) {
+        plan = rulePlan(q); warn = `AI 해석 실패(${e.message}) → 규칙 해석으로 대신함`;
+      }
+    } else plan = rulePlan(q);
+    progress("2/3 앱이 상품 목록·원문에서 계산하는 중…");
+    const result = await executePlan(plan);
+    answer = templateAnswer(result);
+    let aiWrote = false;
+    if (useAi && ($("aiWrite") ? $("aiWrite").checked : true)) {
+      progress(`3/3 로컬 AI가 답변 문장을 쓰는 중…`);
+      try { answer = (await aiAnswer(q, result)).trim() || answer; aiWrote = true; } catch (e) { warn += (warn ? " · " : "") + `AI 답변 실패(${e.message}) → 정해진 문장으로 대신함`; }
+    }
+    const bad = aiWrote && plan.action !== "explain" ? numberCheck(answer, result, q) : [];
+    const sec = ((performance.now() - t0) / 1000).toFixed(1);
+    box.innerHTML = `<div class="ai-answer">${esc(answer).replace(/\n/g, "<br>")}</div>` +
+      (bad.length ? `<p class="warn">확인 필요: AI 문장의 숫자 ${esc(bad.join(", "))}은(는) 앱 계산 결과에 없습니다. 아래 표의 값을 기준으로 보세요.</p>` : "") +
+      (plan.action === "explain" && aiWrote ? `<p class="warn">문서 근거 없는 일반 설명입니다(AI 지식). 회사 기준은 기초서류로 확인하세요.</p>` : "") +
+      `<div class="ai-meta">${esc(by)} · 숫자는 앱 계산값 · 답변 ${aiWrote ? "AI 작성" : "정해진 문장"} · ${sec}초${warn ? ` · <span class="warn">${esc(warn)}</span>` : ""}</div>` +
+      (plan.action === "explain" ? "" : resultHtml(result));
+    AI_HISTORY.push({ q, plan });
+  } catch (e) {
+    box.innerHTML = `<p class="warn">답변 실패: ${esc(e.message)}</p>`;
+  } finally {
+    aiBusy = false; $("aiSend").disabled = false;
+  }
+}
+
+$("aiForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const q = $("aiInput").value;
+  $("aiInput").value = "";
+  askAi(q);
+});
+$("aiClear").addEventListener("click", () => { $("aiLog").innerHTML = ""; AI_HISTORY.length = 0; });
+
+const AI_EXAMPLES = ["종신보험 중 판매중지된 상품은 몇 개야?", "판매중인 상품의 평균 예정이율은?", "연도별로 상품이 몇 개 나왔어?",
+  "사망 시 이미 납입한 보험료에서 인출금액을 차감한 금액을 지급하는 상품은?", "2023년 이후 나온 종신보험 목록 알려줘"];
+$("aiExamples").innerHTML = "예시: " + AI_EXAMPLES.map(x => `<button type="button" class="mini" data-ai-ex="${esc(x)}">${esc(x)}</button>`).join(" ");
+$("aiExamples").addEventListener("click", e => {
+  const b = e.target.closest("button[data-ai-ex]");
+  if (b) askAi(b.dataset.aiEx);
+});
+
+aiCheck();
