@@ -380,6 +380,18 @@ def near_words(ids, words, after=80, per_doc=6):
     return out
 
 
+def pages_with(ids, words, limit=20000):
+    """단어가 모두 들어 있는 페이지 원문 — AI 질문의 구조 판정(예: 사망보험금 기간별 차등)용"""
+    words = [norm(w) for w in words if norm(w)]
+    if not words or not ids:
+        return []
+    cond = " AND ".join(f"instr({SQL_NORM}, ?) > 0" for _ in words)
+    sql = (f"SELECT doc_id, page_no, text FROM pages WHERE doc_id IN (SELECT value FROM json_each(?)) "
+           f"AND {cond} ORDER BY doc_id, page_no LIMIT {int(limit)}")
+    with connect() as c:
+        return [{"id": d, "page": p, "text": t} for d, p, t in c.execute(sql, [json.dumps([int(i) for i in ids])] + words)]
+
+
 # ---------- 로컬 AI (Ollama) ----------
 def ollama(path, body=None, timeout=5):
     data = None if body is None else json.dumps(body).encode("utf-8")
@@ -493,6 +505,8 @@ def make_handler(root):
                     return self.send_json({"hits": ask(body.get("groups", []), body.get("need", 1), body.get("ids", []))})
                 if path == "/api/near":
                     return self.send_json({"hits": near_words(body.get("ids", []), body.get("words", []))})
+                if path == "/api/pages_with":
+                    return self.send_json({"pages": pages_with(body.get("ids", []), body.get("words", []))})
                 if path == "/api/ai/chat":
                     return self.send_json(ai_chat(body))
                 if path == "/api/snippets":

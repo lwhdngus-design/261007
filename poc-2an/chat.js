@@ -23,6 +23,74 @@ const AI_FIELDS = {
   "납입기간": { words: ["납입기간"], text: true },
 };
 
+// 낱말이 아니라 문서 구조로 판정하는 개념 — 예) 사망보험금이 경과기간에 따라 달라지는 상품(체증형·계단식·체감)
+// 판정: 급부 말(anchor) 뒤 400자 안에 서로 다른 기간 표현(○년 경과·이내·미만·이후…) 2개 이상 +
+//       서로 다른 금액 표현(○%·보험가입금액·○원) 2개 이상(또는 '매1년마다 …를 더한', 체증·체감 같은 증감 표현)
+const PERIOD_RE = /\d+년(?:경과|이내|미만|이후|초과|지난|까지|이상|동안|시점)/g;
+const AMOUNT_RE = /\d+(?:\.\d+)?%|보험가입금액|가입금액|\d[\d,]*만?원/g;
+const CLAUSE_RE = /(?<!\d)\d{1,2}\.(?=[가-힣])|제\d+조[【(]|\(주\)|주\)|별표\d/;
+const STEP_RE = /체증|체감|매\d*년(?:마다)?|씩(?:증가|감소|가산|체증)|[을를]더한|[을를]뺀/;
+const AI_CONCEPTS = {
+  "사망보험금 기간별 차등": { anchor: /사망보험금|사망하였을|사망한경우|사망시/g, words: ["사망", "년"],
+    desc: "사망보험금 지급금액이 경과기간(○년 이내·이후 등)에 따라 달라짐" },
+  "보험금 기간별 차등": { anchor: /보험금|지급금액|급부/g, words: ["보험금", "년"],
+    desc: "보험금 지급금액이 경과기간에 따라 달라짐(체증·체감·감액 포함)" },
+};
+
+// 한 페이지에서 개념에 맞는 첫 구간 (원문 그대로, 기간·금액 표현 표시용 목록과 함께)
+function conceptHit(text, concept) {
+  const map = [];
+  let comp = "";
+  for (let i = 0; i < text.length; i++) if (!/\s/.test(text[i])) { comp += text[i]; map.push(i); }
+  const c = AI_CONCEPTS[concept];
+  c.anchor.lastIndex = 0;
+  let m, skipTo = -1;
+  while ((m = c.anchor.exec(comp))) {
+    if (m.index < skipTo) continue;
+    // 다음 항목(예: "8.면책", "제5조【", "(주)")이 시작되면 그 앞까지만 봄 — 다른 조항의 기간이 섞이지 않게
+    let w = comp.slice(m.index, m.index + 400);
+    const b = w.slice(10).search(CLAUSE_RE);
+    if (b !== -1) w = w.slice(0, 10 + b);
+    const periods = [...new Set(w.match(PERIOD_RE) || [])];
+    const amounts = [...new Set(w.match(AMOUNT_RE) || [])];
+    if (periods.length >= 2 && (amounts.length >= 2 || STEP_RE.test(w))) {
+      const end = map[Math.min(m.index + w.length, comp.length) - 1] + 1;
+      return { text: text.slice(map[m.index], end).replace(/\s+/g, " ").trim(), matched: [m[0], ...periods, ...amounts].slice(0, 12) };
+    }
+    skipTo = m.index + 40;
+  }
+  return null;
+}
+
+// 상품별로 최신 판매일자 문서부터 찾아 처음 맞는 구간
+async function conceptEvidence(products, concept) {
+  const c = AI_CONCEPTS[concept], out = new Map();
+  const docs = products.flatMap(p => p.versions.flatMap(v => v.docs));
+  const pages = new Map(); // doc → [{page, text}]
+  if (SERVER_MODE) {
+    const ids = docs.filter(d => d.id).map(d => d.id), byId = new Map(docs.map(d => [d.id, d]));
+    const res = ids.length ? (await api("api/pages_with", { ids, words: c.words })).pages : [];
+    res.forEach(h => { const d = byId.get(h.id); if (d) { if (!pages.has(d)) pages.set(d, []); pages.get(d).push(h); } });
+  } else {
+    docs.forEach(d => pages.set(d, (d.pages || []).map((text, i) => ({ page: i + 1, text }))));
+  }
+  for (const p of products) {
+    let found = null;
+    for (const v of p.versions) {
+      for (const d of [...v.docs].sort(byDocPriority)) {
+        for (const pg of pages.get(d) || []) {
+          const h = conceptHit(pg.text, concept);
+          if (h) { found = { doc: d, page: pg.page, ...h, latest: v === p.versions[0] }; break; }
+        }
+        if (found) break;
+      }
+      if (found) break;
+    }
+    if (found) out.set(p.key, [found]);
+  }
+  return out;
+}
+
 // ---------- 로컬 AI 연결 (serve.py가 127.0.0.1:11434 의 Ollama로만 전달) ----------
 async function aiCheck() {
   if (!SERVER_MODE) { AI.ok = false; AI.error = DEMO_MODE ? "웹 데모" : "파일로 연 화면"; renderAiStatus(); return; }
@@ -70,7 +138,7 @@ document.addEventListener("click", e => {
 });
 
 // ---------- 1) 질문 → 조건 ----------
-const PLAN_KEYS = ["action", "category", "status", "year_from", "year_to", "product", "feature", "text", "field", "group_by"];
+const PLAN_KEYS = ["action", "category", "status", "year_from", "year_to", "product", "feature", "text", "field", "group_by", "concept"];
 const PLAN_ACTIONS = ["count", "list", "average", "max", "min", "find", "explain"];
 const PLAN_GROUPS = ["", "연도", "판매상태", "분류"];
 
@@ -86,6 +154,7 @@ const planSchema = () => ({
     text: { type: "string" },
     field: { type: "string", enum: ["", ...Object.keys(AI_FIELDS)] },
     group_by: { type: "string", enum: PLAN_GROUPS },
+    concept: { type: "string", enum: ["", ...Object.keys(AI_CONCEPTS)] },
   },
   required: PLAN_KEYS,
 });
@@ -100,10 +169,12 @@ const plannerPrompt = () => `너는 보험 기초서류 검색 앱의 질문 해
 - text: 문서 문장에서 찾아야 할 내용(특징 목록으로 표현이 안 될 때). 예: "사망 시 이미 납입한 보험료에서 인출금액을 차감". 없으면 ""
 - field: 문서에서 읽을 값: ${Object.keys(AI_FIELDS).join(", ")} 또는 "". 평균·최고·최저는 field가 꼭 있어야 한다.
 - group_by: "연도" | "판매상태" | "분류" | "" ("연도별로", "상태별로" 같은 말이 있을 때)
-예) "종신보험 판매중지 상품 몇 개야?" → {"action":"count","category":"종신","status":"판매종료","year_from":"","year_to":"","product":"","feature":"","text":"","field":"","group_by":""}
-예) "판매중인 상품의 평균 예정이율은?" → {"action":"average","category":"","status":"판매중","year_from":"","year_to":"","product":"","feature":"","text":"","field":"예정이율","group_by":""}
-예) "2023년 이후 나온 저해지형 상품 알려줘" → {"action":"list","category":"","status":"","year_from":"2023","year_to":"","product":"","feature":"저해지형","text":"","field":"","group_by":""}
-예) "유사암 진단 시 가입금액의 10%를 주는 상품은?" → {"action":"find","category":"","status":"","year_from":"","year_to":"","product":"","feature":"","text":"유사암 진단 시 가입금액의 10% 지급","field":"","group_by":""}
+예) "종신보험 판매중지 상품 몇 개야?" → {"action":"count","category":"종신","status":"판매종료","year_from":"","year_to":"","product":"","feature":"","text":"","field":"","group_by":"","concept":""}
+예) "판매중인 상품의 평균 예정이율은?" → {"action":"average","category":"","status":"판매중","year_from":"","year_to":"","product":"","feature":"","text":"","field":"예정이율","group_by":"","concept":""}
+예) "2023년 이후 나온 저해지형 상품 알려줘" → {"action":"list","category":"","status":"","year_from":"2023","year_to":"","product":"","feature":"저해지형","text":"","field":"","group_by":"","concept":""}
+예) "유사암 진단 시 가입금액의 10%를 주는 상품은?" → {"action":"find","category":"","status":"","year_from":"","year_to":"","product":"","feature":"","text":"유사암 진단 시 가입금액의 10% 지급","field":"","group_by":"","concept":""}
+- concept: 문서에 같은 낱말로 적혀 있지 않고 표·구조로 판단해야 하는 내용. ${Object.entries(AI_CONCEPTS).map(([k, v]) => `"${k}"(${v.desc})`).join(", ")} 또는 "". concept를 쓰면 text는 ""로 둔다.
+예) "종신 상품 중 사망보험금을 보험기간에 따라 다르게 주는 상품 있어?" → {"action":"find","category":"종신","status":"","year_from":"","year_to":"","product":"","feature":"","text":"","field":"","group_by":"","concept":"사망보험금 기간별 차등"}
 이전 질문의 조건이 주어지면, "그 중", "그럼" 같은 이어지는 질문은 이전 조건을 이어받아 바뀐 부분만 고친다.`;
 
 // AI 응답을 검사해 허용된 값만 남김
@@ -117,6 +188,8 @@ function cleanPlan(p) {
   if (!FEATURES.some(f => f.name === out.feature)) out.feature = "";
   if (!AI_FIELDS[out.field]) out.field = "";
   if (!PLAN_GROUPS.includes(out.group_by)) out.group_by = "";
+  if (!AI_CONCEPTS[out.concept]) out.concept = "";
+  if (out.concept) { out.text = ""; if (out.action === "list") out.action = "find"; }
   ["year_from", "year_to"].forEach(k => { const m = out[k].match(/(19|20)\d{2}/); out[k] = m ? m[0] : ""; });
   if (["average", "max", "min"].includes(out.action) && !out.field) out.action = "list";
   return out;
@@ -147,6 +220,12 @@ function rulePlan(q) {
     !Object.values(AI_FIELDS).some(f => f.words.some(w => t.includes(w))) && !(prod && prod.includes(t)) &&
     !Q.features.some(f => f.phrases.some(ph => t.includes(ph) || ph.includes(t))));
   if (rest.length >= 2) { p.text = rest.join(" "); if (p.action === "list") p.action = "find"; }
+  // 기간에 따라 급부(보험금)가 달라지는지 묻는 질문 → 개념 판정
+  if (/(기간|년|경과|시점|이내|이후).*(다르|다른|달라|달리|차등|차이|증가|감소|늘어|줄어|변하|바뀌)|체증|체감|계단식/.test(raw) && /사망|보험금|급부|지급/.test(raw)) {
+    p.concept = /사망/.test(raw) ? "사망보험금 기간별 차등" : "보험금 기간별 차등";
+    if (["보험기간", "납입기간"].includes(p.field) && !["average", "max", "min"].includes(p.action)) p.field = ""; // '보험기간 중'은 값 요청이 아님
+    if (p.feature === "체증형") p.feature = ""; // '체증'이라고 적히지 않은 계단식 지급도 찾도록 구조 판정으로 대신
+  }
   return cleanPlan(p);
 }
 
@@ -239,6 +318,12 @@ async function executePlan(plan) {
       notes.push(`문장 조건: 핵심어 ${terms.join("·")} 중 ${termsNeeded(terms.length)}개 이상이 한 문장에`);
     }
   }
+  if (plan.concept) {
+    const ev = await conceptEvidence(products, plan.concept);
+    ev.forEach((v, k) => evidence.set(k, v));
+    products = products.filter(p => ev.has(p.key));
+    notes.push(`구조 판정: ${AI_CONCEPTS[plan.concept].desc} — 급부 말 뒤에 서로 다른 기간 표현 2개 이상과 금액(또는 증감) 표현이 함께 있는 원문 (규칙 판정이니 원문 확인)`);
+  }
   const values = plan.field ? await fieldValues(products, plan.field) : new Map();
   const result = { plan, products, evidence, values, total: products.length, notes };
   if (plan.field && !AI_FIELDS[plan.field].text) {
@@ -264,7 +349,7 @@ const planText = p => [
   p.category && `분류 ${p.category}`, p.status && `판매상태 ${p.status}`,
   (p.year_from || p.year_to) && `판매개시 ${p.year_from || "…"}~${p.year_to || "…"}년`,
   p.product && `상품 ${p.product}`, p.feature && `특징 ${p.feature}`, p.text && `문서 내용 "${p.text}"`,
-  p.field && `값 ${p.field}`, p.group_by && `${p.group_by}별`].filter(Boolean);
+  p.concept && `구조 ${p.concept}`, p.field && `값 ${p.field}`, p.group_by && `${p.group_by}별`].filter(Boolean);
 
 function factsFor(result) {
   const p = result.plan, f = AI_FIELDS[p.field];
@@ -275,7 +360,7 @@ function factsFor(result) {
       const v = result.values.get(x.key), ev = result.evidence.get(x.key);
       return { 상품명: x.name, 분류: x.kind, 판매상태: x.status, 최신판매일자: x.latest.start,
         ...(v ? { [p.field]: f.text ? v.value : `${v.value}${f.unit}`, 근거: `${v.doc.docType} p.${v.page}` } : p.field ? { [p.field]: "문서에서 못 찾음" } : {}),
-        ...(ev ? { 근거문장: ev[0].text.slice(0, 160), 문장근거: `${ev[0].doc.docType} p.${ev[0].page}` } : {}) };
+        ...(ev ? { 근거문장: ev[0].text.slice(0, 220), 문장근거: `${ev[0].doc.docType}(${ev[0].doc.start || "?"}) p.${ev[0].page}` } : {}) };
     }),
   };
   if (result.total > 25) facts.생략 = `외 ${result.total - 25}개`;
@@ -346,7 +431,7 @@ function resultHtml(result) {
       const v = result.values.get(x.key), ev = result.evidence.get(x.key);
       const link = (d, page, label) => `<a href="#" data-open="${DOCS.indexOf(d)}" data-page="${page}">${esc(label)}</a>`;
       const vCell = !p.field ? "" : `<td>${v ? `<b>${esc(f.text ? v.value : v.value + f.unit)}</b><div class="path">${link(v.doc, v.page, `${v.doc.docType}(${v.start}) p.${v.page}`)}${v.latest ? "" : " · 이전 판"}</div>` : `<span class="muted">문서에서 못 찾음</span>`}</td>`;
-      const eCell = !result.evidence.size ? "" : `<td>${ev ? `${link(ev[0].doc, ev[0].page, `${ev[0].doc.docType} p.${ev[0].page}`)} ${highlight(ev[0].text, ev[0].matched)}` : ""}</td>`;
+      const eCell = !result.evidence.size ? "" : `<td>${ev ? `${link(ev[0].doc, ev[0].page, `${ev[0].doc.docType}(${ev[0].doc.start || "?"}) p.${ev[0].page}`)}${ev[0].latest === false ? " · 이전 판" : ""} ${highlight(ev[0].text, ev[0].matched)}` : ""}</td>`;
       return `<tr><td><button type="button" class="linkbtn" data-analyze="${esc(x.key)}" data-start="${esc(x.latest.start)}">${esc(x.name)}</button></td>` +
         `<td>${esc(x.kind)}</td><td>${stBadge(x.status, x.latest.statusBy)}</td><td>${esc(x.latest.start || "")}</td>${vCell}${eCell}<td>${docLinksHtml(x.latest.docs)}</td></tr>`;
     }).join("") + `</tbody></table></div>` + (result.total > SHOW ? `<p class="note">외 ${result.total - SHOW}개</p>` : "");
@@ -378,6 +463,17 @@ async function askAi(q) {
         const raw = await aiChat([{ role: "system", content: plannerPrompt() }, { role: "user", content: (prev ? prev + "\n\n" : "") + "질문: " + q }], planSchema());
         plan = cleanPlan(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
         by = `로컬 AI 해석 (${AI.model})`;
+        // 안전장치: AI가 놓친 조건을 규칙 해석으로 보완 (구조 판정, 또는 AI 조건이 하나도 없을 때)
+        const rp = rulePlan(q), filled = [];
+        if (!plan.concept && rp.concept) {
+          plan.concept = rp.concept; plan.text = ""; filled.push("구조 판정");
+          if (plan.action === "list") plan.action = "find";
+          if (plan.feature === "체증형") plan.feature = "";
+          if (!plan.category && rp.category) plan.category = rp.category;
+        }
+        const conds = x => ["category", "status", "year_from", "year_to", "product", "feature", "text", "field", "concept"].filter(k => x[k]).length;
+        if (!conds(plan) && conds(rp)) { plan = { ...rp, action: plan.action === "list" ? rp.action : plan.action }; filled.push("조건 전체"); }
+        if (filled.length) by += ` + 규칙 보완(${filled.join("·")})`;
       } catch (e) {
         plan = rulePlan(q); warn = `AI 해석 실패(${e.message}) → 규칙 해석으로 대신함`;
       }
