@@ -19,9 +19,45 @@ const AI_FIELDS = {
     } },
   "가입나이": { words: ["가입나이", "가입연령"], unit: "세",
     parse: w => { const m = w.match(/(\d+)세?~(?:만)?(\d+)세/); return m ? +m[2] : null; }, note: "최고 가입나이" },
-  "보험기간": { words: ["보험기간"], text: true },
-  "납입기간": { words: ["납입기간"], text: true },
+  // 보험기간·납입기간: 근처 원문에서 기간 값 목록을 읽음 (예: 20년만기, 80세만기, 종신 / 10년납, 전기납) → "1년짜리" 같은 값 조건으로 거름
+  "보험기간": { words: ["보험기간"], text: true, terms: "period" },
+  "납입기간": { words: ["납입기간"], text: true, terms: "pay" },
 };
+
+// 기간 값 읽기 — 같은 표기로 맞춤: 1년(=1년만기·1년갱신) / 80세만기 / 종신 / 10년납 / 60세납 / 전기납 / 일시납
+const PERIOD_TOKEN_RE = /(\d{1,3})(년|세)납|전기납|일시납|(\d{1,3})(년|세)만기|종신|(\d{1,3})년(?![납이미경초동마차후간도내전부까의분째씩치])/g;
+const PAY_TOKEN_RE = /(\d{1,3})(년|세)납|전기납|일시납/g;
+function termTokens(w, kind) {
+  const out = [];
+  const re = kind === "pay" ? PAY_TOKEN_RE : PERIOD_TOKEN_RE;
+  re.lastIndex = 0;
+  let m, prevEnd = -9, prevPay = false;
+  while ((m = re.exec(w))) {
+    const isPay = /납$/.test(m[0]);
+    let t = null;
+    if (kind === "pay") t = m[1] ? `${+m[1]}${m[2]}납` : m[0];
+    else if (!isPay) {
+      if (m[0] === "종신") t = "종신";
+      else if (m[3]) t = m[4] === "세" ? `${+m[3]}세만기` : `${+m[3]}년`;
+      // 표에서 납입기간 값(예: "7년납 3년 4년") 바로 뒤에 붙은 "N년"은 납입기간 칸으로 보고 뺌
+      else if (!(prevPay && m.index - prevEnd <= 2)) t = `${+m[5]}년`;
+      else { prevEnd = m.index + m[0].length; continue; }
+    }
+    prevPay = isPay; prevEnd = m.index + m[0].length;
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+// 질문의 값("1년짜리", "80세 만기", "10년납") → 같은 표기
+function termValue(v, kind) {
+  const c = norm(v);
+  if (kind === "pay") {
+    const m = c.match(/(?<!\d)(\d{1,3})(년|세)/);
+    return /전기납/.test(c) ? "전기납" : /일시납/.test(c) ? "일시납" : m ? `${+m[1]}${m[2]}납` : "";
+  }
+  const m = c.match(/(?<!\d)(\d{1,3})(년|세)/);
+  return /종신/.test(c) ? "종신" : m ? (m[2] === "세" ? `${+m[1]}세만기` : `${+m[1]}년`) : "";
+}
 
 // 낱말이 아니라 문서 구조로 판정하는 개념 — 예) 사망보험금이 경과기간에 따라 달라지는 상품(체증형·계단식·체감)
 // 판정: 급부 말(anchor) 뒤 400자 안에 서로 다른 기간 표현(○년 경과·이내·미만·이후…) 2개 이상 +
@@ -140,7 +176,7 @@ document.addEventListener("click", e => {
 });
 
 // ---------- 1) 질문 → 조건 ----------
-const PLAN_KEYS = ["action", "category", "status", "year_from", "year_to", "product", "text", "field", "group_by", "concept"]; // + features(배열)·feature_logic
+const PLAN_KEYS = ["action", "category", "status", "year_from", "year_to", "product", "text", "field", "value", "group_by", "concept"]; // + features(배열)·feature_logic
 const PLAN_ACTIONS = ["count", "list", "average", "max", "min", "find", "explain"];
 const PLAN_GROUPS = ["", "연도", "판매상태", "분류"];
 
@@ -154,6 +190,7 @@ const planSchema = () => ({
     product: { type: "string" },
     features: { type: "array", items: { type: "string", enum: FEATURES.map(f => f.name) } },
     feature_logic: { type: "string", enum: ["and", "or"] },
+    value: { type: "string" },
     text: { type: "string" },
     field: { type: "string", enum: ["", ...Object.keys(AI_FIELDS)] },
     group_by: { type: "string", enum: PLAN_GROUPS },
@@ -172,14 +209,17 @@ const plannerPrompt = () => `너는 보험 기초서류 검색 앱의 질문 해
 - feature_logic: 특징이 여러 개일 때 "and"(모두 해당) 또는 "or"("A 또는 B", "A나 B"처럼 하나라도 해당)
 - text: 문서 문장에서 찾아야 할 내용(특징 목록으로 표현이 안 될 때). 예: "사망 시 이미 납입한 보험료에서 인출금액을 차감". 없으면 ""
 - field: 문서에서 읽을 값: ${Object.keys(AI_FIELDS).join(", ")} 또는 "". 평균·최고·최저는 field가 꼭 있어야 한다.
+- value: field가 보험기간·납입기간일 때 찾을 값(예: "1년", "종신", "80세만기", "10년납", "전기납"). "보험기간 1년짜리"처럼 값 조건이 있으면 꼭 넣는다. 없으면 ""
 - group_by: "연도" | "판매상태" | "분류" | "" ("연도별로", "상태별로" 같은 말이 있을 때)
-예) "종신보험 판매중지 상품 몇 개야?" → {"action":"count","category":"종신","status":"판매종료","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"","group_by":"","concept":""}
-예) "판매중인 상품의 평균 예정이율은?" → {"action":"average","category":"","status":"판매중","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"예정이율","group_by":"","concept":""}
-예) "2023년 이후 나온 저해지형 상품 알려줘" → {"action":"list","category":"","status":"","year_from":"2023","year_to":"","product":"","features":["저해지형"],"feature_logic":"and","text":"","field":"","group_by":"","concept":""}
-예) "유사암 진단 시 가입금액의 10%를 주는 상품은?" → {"action":"find","category":"","status":"","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"유사암 진단 시 가입금액의 10% 지급","field":"","group_by":"","concept":""}
+예) "종신보험 판매중지 상품 몇 개야?" → {"action":"count","category":"종신","status":"판매종료","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"","value":"","group_by":"","concept":""}
+예) "판매중인 상품의 평균 예정이율은?" → {"action":"average","category":"","status":"판매중","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"예정이율","value":"","group_by":"","concept":""}
+예) "2023년 이후 나온 저해지형 상품 알려줘" → {"action":"list","category":"","status":"","year_from":"2023","year_to":"","product":"","features":["저해지형"],"feature_logic":"and","text":"","field":"","value":"","group_by":"","concept":""}
+예) "유사암 진단 시 가입금액의 10%를 주는 상품은?" → {"action":"find","category":"","status":"","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"유사암 진단 시 가입금액의 10% 지급","field":"","value":"","group_by":"","concept":""}
 - concept: 문서에 같은 낱말로 적혀 있지 않고 표·구조로 판단해야 하는 내용. ${Object.entries(AI_CONCEPTS).map(([k, v]) => `"${k}"(${v.desc})`).join(", ")} 또는 "". concept를 쓰면 text는 ""로 둔다.
-예) "종신 상품 중 사망보험금을 보험기간에 따라 다르게 주는 상품 있어?" → {"action":"find","category":"종신","status":"","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"","group_by":"","concept":"사망보험금 기간별 차등"}
-예) "종신보험 중 추가납입 또는 중도인출이 되는 상품 알려줘" → {"action":"list","category":"종신","status":"","year_from":"","year_to":"","product":"","features":["추가납입","중도인출"],"feature_logic":"or","text":"","field":"","group_by":"","concept":""}
+예) "종신 상품 중 사망보험금을 보험기간에 따라 다르게 주는 상품 있어?" → {"action":"find","category":"종신","status":"","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"","value":"","group_by":"","concept":"사망보험금 기간별 차등"}
+예) "종신보험 중 추가납입 또는 중도인출이 되는 상품 알려줘" → {"action":"list","category":"종신","status":"","year_from":"","year_to":"","product":"","features":["추가납입","중도인출"],"feature_logic":"or","text":"","field":"","value":"","group_by":"","concept":""}
+예) "보험기간 1년짜리 상품 알려줘" → {"action":"list","category":"","status":"","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"보험기간","value":"1년","group_by":"","concept":""}
+예) "10년납 종신보험 몇 개야?" → {"action":"count","category":"종신","status":"","year_from":"","year_to":"","product":"","features":[],"feature_logic":"and","text":"","field":"납입기간","value":"10년납","group_by":"","concept":""}
 concept는 질문에 '기간·경과·○년에 따라 보험금이 다르다/늘어난다/체증' 같은 말이 있을 때만 쓴다.
 이전 질문의 조건이 주어지면, "그 중", "그럼" 같은 이어지는 질문은 이전 조건을 이어받아 바뀐 부분만 고친다.`;
 
@@ -195,6 +235,7 @@ function cleanPlan(p) {
   out.features = [...new Set(fl.filter(n => FEATURES.some(f => f.name === n)))];
   out.feature_logic = p?.feature_logic === "or" && out.features.length > 1 ? "or" : "and";
   if (!AI_FIELDS[out.field]) out.field = "";
+  out.value = out.value && AI_FIELDS[out.field] && AI_FIELDS[out.field].terms ? termValue(out.value, AI_FIELDS[out.field].terms) : "";
   if (!PLAN_GROUPS.includes(out.group_by)) out.group_by = "";
   if (!AI_CONCEPTS[out.concept]) out.concept = "";
   if (out.concept) { out.text = ""; if (out.action === "list") out.action = "find"; }
@@ -219,6 +260,13 @@ function rulePlan(q) {
   else if (/최고|최대|가장높|제일높/.test(raw)) p.action = "max";
   else if (/최저|최소|가장낮|제일낮/.test(raw)) p.action = "min";
   p.field = Object.keys(AI_FIELDS).find(f => AI_FIELDS[f].words.some(w => raw.includes(w))) || "";
+  // 기간 값 조건: "보험기간 1년짜리", "80세만기", "10년납", "전기납"
+  if (!p.field && /(?<!\d)\d{1,3}(년|세)납|전기납|일시납/.test(raw)) p.field = "납입기간";
+  if (!p.field && /(?<!\d)\d{1,3}(년|세)만기/.test(raw)) p.field = "보험기간";
+  if (AI_FIELDS[p.field] && AI_FIELDS[p.field].terms) {
+    const num = raw.replace(/(19|20)\d{2}년/g, "").match(/(?<!\d)\d{1,3}(년|세)(만기|납)?|종신|전기납|일시납/);
+    if (num) p.value = num[0];
+  }
   const g = raw.match(/(연도|년도|판매상태|상태|분류)별/);
   if (g) p.group_by = g[1] === "년도" ? "연도" : g[1] === "상태" ? "판매상태" : g[1];
   const y = raw.match(/((?:19|20)\d{2})년(이후|부터)/);
@@ -230,14 +278,14 @@ function rulePlan(q) {
   // "예정이율이 뭐야?"처럼 용어 뜻을 묻는 질문
   if (p.field && !prod && p.action === "list" && /뭐야|뭔가요|무엇인가|무엇이야|이란|란뭐|뜻|의미|설명해/.test(raw)) p.action = "explain";
   // 남은 핵심어가 2개 이상이면 문서 문장에서 찾을 내용
-  const rest = questionTerms(q).filter(t => !/^(몇|개수|건수|평균|최고|최저|최대|최소|가장|제일|목록|전체|모두|얼마|연도별|상태별|분류별|이후|이전|부터|까지)/.test(t) &&
+  const rest = questionTerms(q).filter(t => !/^\d{1,3}(년|세)|짜리|만기/.test(t) && !/^(몇|개수|건수|평균|최고|최저|최대|최소|가장|제일|목록|전체|모두|얼마|연도별|상태별|분류별|이후|이전|부터|까지)/.test(t) &&
     !Object.values(AI_FIELDS).some(f => f.words.some(w => t.includes(w))) && !(prod && prod.includes(t)) &&
     !Q.features.some(f => f.phrases.some(ph => t.includes(ph) || ph.includes(t))));
   if (rest.length >= 2) { p.text = rest.join(" "); if (p.action === "list") p.action = "find"; }
   // 기간에 따라 급부(보험금)가 달라지는지 묻는 질문 → 개념 판정
   if (conceptAsked(raw)) {
     p.concept = /사망/.test(raw) ? "사망보험금 기간별 차등" : "보험금 기간별 차등";
-    if (["보험기간", "납입기간"].includes(p.field) && !["average", "max", "min"].includes(p.action)) p.field = ""; // '보험기간 중'은 값 요청이 아님
+    if (["보험기간", "납입기간"].includes(p.field) && !p.value && !["average", "max", "min"].includes(p.action)) p.field = ""; // '보험기간 중'은 값 요청이 아님
     p.features = p.features.filter(n => n !== "체증형"); // '체증'이라고 적히지 않은 계단식 지급도 찾도록 구조 판정으로 대신
   }
   return cleanPlan(p);
@@ -265,18 +313,20 @@ function productInQuestion(raw) {
 const CATALOG_FOR_AI = () => (CATALOG.length ? CATALOG : buildCatalog());
 
 // 문서에서 단어 근처 원문 (서버 모드는 색인에서, 그 밖에는 메모리 본문에서)
-async function nearWord(docs, words) {
+async function nearWord(docs, words, after = 80) {
   const out = new Map(); // doc → [{page, text}]
   if (SERVER_MODE) {
     const ids = docs.filter(d => d.id).map(d => d.id), byId = new Map(docs.map(d => [d.id, d]));
-    const res = ids.length ? (await api("api/near", { ids, words })).hits : [];
+    const res = ids.length ? (await api("api/near", { ids, words, after })).hits : [];
     res.forEach(h => { const d = byId.get(h.id); if (d) { if (!out.has(d)) out.set(d, []); out.get(d).push(h); } });
   } else {
     docs.forEach(d => (d.pages || []).forEach((t, pi) => {
       const comp = norm(t);
       for (const w of words) {
-        const i = comp.indexOf(w);
-        if (i !== -1) { if (!out.has(d)) out.set(d, []); out.get(d).push({ page: pi + 1, text: comp.slice(i, i + 80) }); break; }
+        for (let i = comp.indexOf(w), n = 0; i !== -1 && n < 3; i = comp.indexOf(w, i + w.length), n++) {
+          if (!out.has(d)) out.set(d, []);
+          out.get(d).push({ page: pi + 1, text: comp.slice(i, i + after) });
+        }
       }
     }));
   }
@@ -287,7 +337,7 @@ async function nearWord(docs, words) {
 async function fieldValues(products, fieldName) {
   const f = AI_FIELDS[fieldName];
   const docs = products.flatMap(p => p.versions.flatMap(v => v.docs));
-  const near = await nearWord(docs, f.words.map(norm));
+  const near = await nearWord(docs, f.words.map(norm), f.terms ? 300 : 80);
   const res = new Map();
   for (const p of products) {
     let found = null;
@@ -295,8 +345,16 @@ async function fieldValues(products, fieldName) {
       for (const d of [...v.docs].sort(byDocPriority)) {
         for (const h of near.get(d) || []) {
           const w = norm(h.text);
-          const value = f.text ? w.slice(0, 60) : f.parse(w);
-          if (value !== null && value !== "") { found = { value, doc: d, page: h.page, text: h.text, start: v.start, latest: v === p.versions[0] }; break; }
+          let value, tokens = null;
+          if (f.terms) {
+            // 다음 항목("4.납입기간", "제5조【" 등) 전까지만 보고 기간 값 목록을 읽음
+            let win = w;
+            const b = win.slice(10).search(CLAUSE_RE);
+            if (b !== -1) win = win.slice(0, 10 + b);
+            tokens = termTokens(win, f.terms);
+            value = tokens.join(", ");
+          } else value = f.text ? w.slice(0, 60) : f.parse(w);
+          if (value !== null && value !== "") { found = { value, tokens, doc: d, page: h.page, text: h.text, start: v.start, latest: v === p.versions[0] }; break; }
         }
         if (found) break;
       }
@@ -339,7 +397,14 @@ async function executePlan(plan) {
     notes.push(`구조 판정: ${AI_CONCEPTS[plan.concept].desc} — 급부 말 뒤에 서로 다른 기간 표현 2개 이상과 금액(또는 증감) 표현이 함께 있는 원문 (규칙 판정이니 원문 확인)`);
   }
   const values = plan.field ? await fieldValues(products, plan.field) : new Map();
-  const result = { plan, products, evidence, values, total: products.length, notes };
+  let unread = [];
+  if (plan.value) {
+    unread = products.filter(p => !values.get(p.key));
+    const noValue = unread.length;
+    products = products.filter(p => { const v = values.get(p.key); return v && v.tokens && v.tokens.includes(plan.value); });
+    notes.push(`값 조건: 문서에서 읽은 ${plan.field} 값에 '${plan.value}'가 있는 상품` + (noValue ? ` (${plan.field}을 문서에서 못 읽은 상품 ${noValue}개는 제외 — 원문 확인 필요)` : ""));
+  }
+  const result = { plan, products, evidence, values, total: products.length, notes, unread };
   if (plan.field && !AI_FIELDS[plan.field].text) {
     const nums = products.map(p => values.get(p.key)).filter(Boolean).map(v => v.value);
     result.found = nums.length;
@@ -363,7 +428,7 @@ const planText = p => [
   p.category && `분류 ${p.category}`, p.status && `판매상태 ${p.status}`,
   (p.year_from || p.year_to) && `판매개시 ${p.year_from || "…"}~${p.year_to || "…"}년`,
   p.product && `상품 ${p.product}`, p.features.length && `특징 ${p.features.join(p.feature_logic === "or" ? " 또는 " : " 그리고 ")}`, p.text && `문서 내용 "${p.text}"`,
-  p.concept && `구조 ${p.concept}`, p.field && `값 ${p.field}`, p.group_by && `${p.group_by}별`].filter(Boolean);
+  p.concept && `구조 ${p.concept}`, p.field && (p.value ? `${p.field} ${p.value}` : `값 ${p.field}`), p.group_by && `${p.group_by}별`].filter(Boolean);
 
 function factsFor(result) {
   const p = result.plan, f = AI_FIELDS[p.field];
@@ -437,7 +502,11 @@ function resultHtml(result) {
   let html = `<div class="ai-cond">해석한 조건: ${chips}</div>`;
   if (result.notes.length) html += `<div class="note">${esc(result.notes.join(" · "))}</div>`;
   if (result.groups) html += `<div class="note">${esc(p.group_by)}별: ${result.groups.map(([k, n]) => `${esc(k)} <b>${n}</b>개`).join(" · ")}</div>`;
-  if (!result.products.length) return html;
+  // 값 조건인데 그 값을 문서에서 못 읽은 상품 — 원문 확인용
+  const unreadHtml = result.unread && result.unread.length ? `<details class="ai-unread"><summary>${esc(p.field)}을 문서에서 못 읽은 상품 ${result.unread.length}개 — 원문에서 확인</summary><ul>` +
+    result.unread.slice(0, 100).map(x => `<li><button type="button" class="linkbtn" data-analyze="${esc(x.key)}" data-start="${esc(x.latest.start)}">${esc(x.name)}</button> ${docLinksHtml(x.latest.docs)}</li>`).join("") +
+    (result.unread.length > 100 ? `<li class="note">외 ${result.unread.length - 100}개</li>` : "") + `</ul></details>` : "";
+  if (!result.products.length) return html + unreadHtml;
   const SHOW = 10, MAX = 300; // 처음엔 10개만, 나머지는 [더 보기]
   html += `<div class="table-scroll"><table class="ai-table"><thead><tr><th>상품명</th><th>분류</th><th>판매상태</th><th>최신 판매일자</th>` +
     (p.field ? `<th>${esc(p.field)}</th>` : "") + (result.evidence.size ? `<th>근거 문장</th>` : "") + `<th>기초서류</th></tr></thead><tbody>` +
@@ -450,7 +519,7 @@ function resultHtml(result) {
         `<td>${esc(x.kind)}</td><td>${stBadge(x.status, x.latest.statusBy)}</td><td>${esc(x.latest.start || "")}</td>${vCell}${eCell}<td>${docLinksHtml(x.latest.docs)}</td></tr>`;
     }).join("") + `</tbody></table></div>` +
     (result.total > SHOW ? `<div class="ai-morebar"><button type="button" class="mini" data-ai-more="${Math.min(result.total, MAX) - SHOW}">나머지 ${Math.min(result.total, MAX) - SHOW}개 더 보기</button>` +
-      (result.total > MAX ? ` <span class="note">(최대 ${MAX}개까지 표시 · 전체 ${result.total}개)</span>` : "") + `</div>` : "");
+      (result.total > MAX ? ` <span class="note">(최대 ${MAX}개까지 표시 · 전체 ${result.total}개)</span>` : "") + `</div>` : "") + unreadHtml;
   return html;
 }
 
@@ -484,7 +553,7 @@ function addTurn(q, followUp = false) {
 // 이전 질문 조건을 이어받아 바뀐 부분만 덮어씀 (로컬 AI가 없을 때의 이어서 질문)
 function mergePlan(prev, cur) {
   const out = { ...prev, action: cur.action };
-  ["category", "status", "year_from", "year_to", "product", "text", "field", "group_by", "concept"].forEach(k => { if (cur[k]) out[k] = cur[k]; });
+  ["category", "status", "year_from", "year_to", "product", "text", "field", "value", "group_by", "concept"].forEach(k => { if (cur[k]) out[k] = cur[k]; });
   if (cur.features.length) { out.features = cur.features; out.feature_logic = cur.feature_logic; }
   if (cur.year_from && !cur.year_to) out.year_to = "";
   if (cur.year_to && !cur.year_from) out.year_from = "";
@@ -521,7 +590,8 @@ async function askAi(q, mode = "auto") {
           plan.features = plan.features.filter(n => n !== "체증형");
           if (!plan.category && rp.category) plan.category = rp.category;
         }
-        const conds = x => ["category", "status", "year_from", "year_to", "product", "text", "field", "concept"].filter(k => x[k]).length + (x.features.length ? 1 : 0);
+        if (!plan.value && rp.value) { plan.field = rp.field; plan.value = rp.value; filled.push("값 조건"); }
+        const conds = x => ["category", "status", "year_from", "year_to", "product", "text", "field", "value", "concept"].filter(k => x[k]).length + (x.features.length ? 1 : 0);
         if (!conds(plan) && conds(rp)) { plan = { ...rp, action: plan.action === "list" ? rp.action : plan.action }; filled.push("조건 전체"); }
         if (followUp) by += " · 이전 질문 조건 이어받음";
         if (filled.length) by += ` + 규칙 보완(${filled.join("·")})`;

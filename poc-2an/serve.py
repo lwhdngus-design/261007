@@ -357,11 +357,12 @@ def ask(groups, need, ids, per_doc=2):
     return out
 
 
-def near_words(ids, words, after=80, per_doc=6):
-    """문서마다 단어가 처음 나오는 곳 뒤쪽 원문(공백 제거) — AI 질문의 값 읽기(예정이율 등)"""
+def near_words(ids, words, after=80, per_doc=8, per_page=3):
+    """문서마다 단어가 나오는 곳 뒤쪽 원문(공백 제거, 페이지당 최대 3곳) — AI 질문의 값 읽기(예정이율·보험기간 등)"""
     words = [norm(w) for w in words if norm(w)]
     if not words or not ids:
         return []
+    after = max(20, min(int(after), 400))
     cond = " OR ".join("instr(t, ?) > 0" for _ in words)
     sql = (f"WITH n AS MATERIALIZED (SELECT doc_id, page_no, {SQL_NORM} AS t FROM pages "
            f"WHERE doc_id IN (SELECT value FROM json_each(?))) "
@@ -369,14 +370,14 @@ def near_words(ids, words, after=80, per_doc=6):
     out, count = [], {}
     with connect() as c:
         for doc_id, page_no, t in c.execute(sql, [json.dumps([int(i) for i in ids])] + words):
-            if count.get(doc_id, 0) >= per_doc:
-                continue
+            found = 0
             for w in words:
                 k = t.find(w)
-                if k != -1:
+                while k != -1 and found < per_page and count.get(doc_id, 0) < per_doc:
                     out.append({"id": doc_id, "page": page_no, "text": t[k:k + after]})
                     count[doc_id] = count.get(doc_id, 0) + 1
-                    break
+                    found += 1
+                    k = t.find(w, k + len(w))
     return out
 
 
@@ -504,7 +505,7 @@ def make_handler(root):
                 if path == "/api/ask":
                     return self.send_json({"hits": ask(body.get("groups", []), body.get("need", 1), body.get("ids", []))})
                 if path == "/api/near":
-                    return self.send_json({"hits": near_words(body.get("ids", []), body.get("words", []))})
+                    return self.send_json({"hits": near_words(body.get("ids", []), body.get("words", []), body.get("after", 80))})
                 if path == "/api/pages_with":
                     return self.send_json({"pages": pages_with(body.get("ids", []), body.get("words", []))})
                 if path == "/api/ai/chat":
