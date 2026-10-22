@@ -107,9 +107,9 @@ const TERM_STOP = new Set(["상품", "보험", "보험상품", "뭐", "뭐가", 
   "뭐였더라", "뭐지", "궁금", "궁금해", "알고", "싶어", "이런", "그런", "어디", "언제", "다른", "같은", "모든", "어떻게", "얼마", "있다", "없다",
   "이것", "그것", "중에", "중", "및", "또는", "그리고", "회사", "우리", "지금", "현재",
   "주는", "받는", "나오는", "해주는", "되는", "하는", "있고", "없는", "때",
-  "나온", "나왔", "나왔어", "나왔나", "나온거", "출시", "출시된", "것만", "거만", "것들", "상품만", "서비스", "보여줘", "보여", "정리해줘", "중에서"]);
+  "나온", "나왔", "나왔어", "나왔나", "나온거", "출시", "출시된", "것만", "거만", "것들", "상품만", "서비스", "보여줘", "보여", "정리해줘", "중에서", "보장", "보상"]);
 // 같은 뜻으로 함께 찾을 말 (질문 핵심어에 들어 있으면 바꿔 넣은 말도 찾음)
-const SYNONYMS = [["차감", "공제", "뺀", "제외"], ["기납입", "이미납입한", "납입한"], ["해지", "해약"], ["지급", "지불"], ["돌려", "환급"], ["줄어", "감소", "감액"], ["신청", "청약"], ["자살", "자신을해친", "자해"], ["미만", "이내"], ["가입", "계약"], ["하루", "1일"], ["지나", "지난"], ["더하", "+", "가산"], ["지급하지않", "보장하지않", "면책", "책임을지지않"]];
+const SYNONYMS = [["차감", "공제", "뺀", "제외"], ["기납입", "이미납입한", "납입한"], ["해지", "해약"], ["지급", "지불"], ["돌려", "환급"], ["줄어", "감소", "감액"], ["신청", "청약"], ["자살", "자신을해친", "자해"], ["미만", "이내"], ["가입", "계약"], ["하루", "1일"], ["지나", "지난"], ["더하", "+", "가산"], ["지급하지않", "보장하지않", "면책", "책임을지지않"], ["체증", "더한", "증가", "늘어"], ["가능", "할수있"]];
 
 function stemOf(w) {
   for (let k = 0; k < 2; k++) {
@@ -134,6 +134,17 @@ function questionTerms(text) {
   return out;
 }
 
+// 붙여 쓴 말이 문서에서는 띄어지거나 사이에 말이 낀 경우("의무가입" ↔ "의무 부가 가입"): 앞 두 글자와 나머지가 가까이(12자 안) 있을 때만
+function splitNear(comp, t) {
+  if (!(t.length >= 4 && /^[가-힣]+$/.test(t))) return false;
+  const a = t.slice(0, 2), b = t.slice(2);
+  for (let i = comp.indexOf(a); i !== -1; i = comp.indexOf(a, i + 1)) {
+    const j = comp.indexOf(b, i + 2);
+    if (j !== -1 && j - i <= 14) return true;
+  }
+  return false;
+}
+
 // 핵심어 → 같은 뜻 말까지 포함한 후보 목록
 function termAlts(t) {
   const alts = [t];
@@ -141,6 +152,7 @@ function termAlts(t) {
     if (!t.includes(w)) continue;
     g.filter(x => x !== w).forEach(x => { const a = t.replace(w, x); if (!alts.includes(a)) alts.push(a); });
   }
+  if (/치료비$/.test(t)) alts.push(t.slice(0, -1)); // 치료비 → 치료(를 받았을 때)
   return alts;
 }
 
@@ -164,7 +176,7 @@ function splitSentences(text) {
 function scoreSentence(sentence, groups) {
   const comp = norm(sentence);
   // 4글자 이상 한글 낱말은 앞 2글자·나머지가 한 문장에 있어도 일치 (예: 만기환급금 ↔ "만기 시 환급금")
-  const matched = groups.map(g => g.find(a => comp.includes(a)) || (g[0].length >= 4 && /^[가-힣]+$/.test(g[0]) && comp.includes(g[0].slice(0, 2)) && comp.includes(g[0].slice(2)) ? g[0] : ""));
+  const matched = groups.map(g => g.find(a => comp.includes(a)) || (splitNear(comp, g[0]) ? g[0] : ""));
   return { hits: matched.filter(Boolean).length, matched: matched.filter(Boolean), len: comp.length };
 }
 

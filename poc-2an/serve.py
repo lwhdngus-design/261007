@@ -328,6 +328,18 @@ def split_sentences(text):
     return out
 
 
+def split_near(comp, t):
+    """앞 2글자와 나머지가 가까이(14자 안) 있을 때만 (question.js splitNear 와 같은 규칙)"""
+    a, b = t[:2], t[2:]
+    i = comp.find(a)
+    while i != -1:
+        j = comp.find(b, i + 2)
+        if j != -1 and j - i <= 14:
+            return True
+        i = comp.find(a, i + 1)
+    return False
+
+
 def ask(groups, need, ids, per_doc=2):
     """핵심어 묶음(같은 뜻 말 포함) 중 need개 이상이 한 문장에 있는 원문. 1) SQL로 그만큼 들어 있는 페이지만 고르고 2) 문장 단위로 채점"""
     groups = [[norm(a) for a in g if norm(a)] for g in groups]
@@ -347,7 +359,7 @@ def ask(groups, need, ids, per_doc=2):
         for doc_id, page_no, text in c.execute(sql, params):
             for sent in split_sentences(text):
                 comp = norm(sent)
-                matched = [next((a for a in g if a in comp), "") or (g[0] if split(g[0]) and g[0][:2] in comp and g[0][2:] in comp else "")
+                matched = [next((a for a in g if a in comp), "") or (g[0] if split(g[0]) and split_near(comp, g[0]) else "")
                            for g in groups]
                 hits = sum(1 for m in matched if m)
                 if hits >= need:
