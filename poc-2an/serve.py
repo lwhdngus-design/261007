@@ -335,17 +335,20 @@ def ask(groups, need, ids, per_doc=2):
     if not groups or not ids:
         return []
     need = max(1, min(int(need), len(groups)))
-    cond = " + ".join("(" + " OR ".join("instr(t, ?) > 0" for _ in g) + ")" for g in groups)
+    # 4글자 이상 한글 낱말은 앞 2글자·나머지가 따로 있어도 일치 (question.js scoreSentence 와 같은 규칙)
+    split = lambda a: len(a) >= 4 and re.fullmatch("[가-힣]+", a) is not None
+    cond = " + ".join("(" + " OR ".join(["instr(t, ?) > 0" for _ in g] + (["(instr(t, ?) > 0 AND instr(t, ?) > 0)"] if split(g[0]) else [])) + ")" for g in groups)
     sql = (f"WITH n AS MATERIALIZED (SELECT doc_id, page_no, text, {SQL_NORM} AS t FROM pages "
            f"WHERE doc_id IN (SELECT value FROM json_each(?))) "
            f"SELECT doc_id, page_no, text FROM n WHERE ({cond}) >= ?")
-    params = [json.dumps([int(i) for i in ids])] + [a for g in groups for a in g] + [need]
+    params = [json.dumps([int(i) for i in ids])] + [x for g in groups for x in (g + ([g[0][:2], g[0][2:]] if split(g[0]) else []))] + [need]
     best = {}
     with connect() as c:
         for doc_id, page_no, text in c.execute(sql, params):
             for sent in split_sentences(text):
                 comp = norm(sent)
-                matched = [next((a for a in g if a in comp), "") for g in groups]
+                matched = [next((a for a in g if a in comp), "") or (g[0] if split(g[0]) and g[0][:2] in comp and g[0][2:] in comp else "")
+                           for g in groups]
                 hits = sum(1 for m in matched if m)
                 if hits >= need:
                     best.setdefault(doc_id, []).append({"id": doc_id, "page": page_no, "text": sent, "hits": hits,

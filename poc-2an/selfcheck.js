@@ -39,7 +39,7 @@ const CHECKS = [
       return `${list.length}개` + (h ? ` · ${list[0].name} ${h.doc.docType} p.${h.page}` : "");
     } },
   // ---- 판매시기별 상품 목록 ----
-  { req: "판매시기별 상품 목록", name: "상품 목록 자동 구성", expect: "상품 5 · 판매일자 10 · PDF 22",
+  { req: "판매시기별 상품 목록", name: "상품 목록 자동 구성", expect: "상품 7 · 판매일자 12 · PDF 28",
     run: () => {
       const c = buildCatalog();
       return `상품 ${c.length} · 판매일자 ${c.reduce((s, p) => s + p.versions.length, 0)} · PDF ${DOCS.length}`;
