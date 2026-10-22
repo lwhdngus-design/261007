@@ -230,11 +230,14 @@
   .ai-form input { flex: 1 1 280px; min-width: 0; }
   .ai-form button:disabled { opacity: .45; cursor: not-allowed; }
   .ai-howto { margin: 6px 0 0; }
+  .ai-dock { position: sticky; bottom: 0; z-index: 5; background: #fff; border-top: 2px solid var(--accent); padding: 12px 0 10px; margin: 0 0 18px; box-shadow: 0 -8px 16px rgba(0,0,0,.06); }
+  .ai-dock .ai-form input { font-size: 15px; padding: 9px 12px; }
+  .ai-morebar { margin-top: 8px; text-align: center; }
   .ai-tag { display: inline-block; font-size: 11px; font-weight: 700; background: rgba(255,255,255,.22); border-radius: 8px; padding: 1px 7px; margin-right: 8px; }
   .ai-turn.follow { margin-top: -6px; }
   .ai-turn.follow .ai-a { margin-left: 28px; border-left-style: dashed; }
   .ai-examples { margin: 10px 0 18px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .ai-examples button.mini { margin-left: 0; }
+  .ai-examples button.mini { margin-left: 0; white-space: normal; text-align: left; max-width: 100%; }
   .ai-setup { border: 1px solid var(--line); padding: 10px 14px; font-size: 14px; }
   .ai-setup summary { cursor: pointer; font-weight: 600; }
   .ai-setup li { margin: 6px 0; line-height: 1.6; }
@@ -527,7 +530,10 @@
   <p class="page-desc">연결된 기초서류에 대해 자유롭게 물어보세요. 질문 해석과 답변 문장은 <b>내 PC의 로컬 AI</b>가 하고,
     개수·평균 같은 <b>숫자는 앱이 직접 계산</b>합니다. 외부로 아무것도 보내지 않습니다.</p>
   <div class="ai-status" id="aiStatus"></div>
+  <div class="ai-examples" id="aiExamples"></div>
   <div class="ai-log" id="aiLog"></div>
+  <!-- 질문창: 화면 아래에 붙어 있어 결과가 길어도 바로 다음 질문 -->
+  <div class="ai-dock" id="aiDock">
   <form class="ai-form" id="aiForm" autocomplete="off">
     <input id="aiInput" placeholder="예) 종신보험 중 판매중지된 상품은 몇 개야?" />
     <button type="submit" class="primary" id="aiSend" title="이전 대화와 상관없이 새로 묻습니다">새 질문</button>
@@ -536,7 +542,7 @@
   </form>
   <p class="note ai-howto"><b>새 질문</b>: 이전 대화와 상관없이 새로 해석 · <b>↳ 이어서 질문</b>: 바로 앞 질문의 조건(분류·판매상태·특징 등)을 이어받아 바뀐 부분만 고침(예: "판매중인 것만") ·
     Enter: "그 중·그럼·거기서"로 시작하면 이어서, 아니면 새 질문 · <b>새 대화 시작</b>: 화면과 기록을 모두 지움</p>
-  <div class="ai-examples" id="aiExamples"></div>
+  </div>
   <details class="ai-setup" id="aiSetup">
     <summary>로컬 AI 설치 방법 (처음 한 번 · 회사 IT 승인 후)</summary>
     <ol>

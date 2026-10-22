@@ -3350,19 +3350,38 @@ function resultHtml(result) {
   if (result.notes.length) html += `<div class="note">${esc(result.notes.join(" · "))}</div>`;
   if (result.groups) html += `<div class="note">${esc(p.group_by)}별: ${result.groups.map(([k, n]) => `${esc(k)} <b>${n}</b>개`).join(" · ")}</div>`;
   if (!result.products.length) return html;
-  const SHOW = 30;
+  const SHOW = 10, MAX = 300; // 처음엔 10개만, 나머지는 [더 보기]
   html += `<div class="table-scroll"><table class="ai-table"><thead><tr><th>상품명</th><th>분류</th><th>판매상태</th><th>최신 판매일자</th>` +
     (p.field ? `<th>${esc(p.field)}</th>` : "") + (result.evidence.size ? `<th>근거 문장</th>` : "") + `<th>기초서류</th></tr></thead><tbody>` +
-    result.products.slice(0, SHOW).map(x => {
+    result.products.slice(0, MAX).map((x, i) => {
       const v = result.values.get(x.key), ev = result.evidence.get(x.key);
       const link = (d, page, label) => `<a href="#" data-open="${DOCS.indexOf(d)}" data-page="${page}">${esc(label)}</a>`;
       const vCell = !p.field ? "" : `<td>${v ? `<b>${esc(f.text ? v.value : v.value + f.unit)}</b><div class="path">${link(v.doc, v.page, `${v.doc.docType}(${v.start}) p.${v.page}`)}${v.latest ? "" : " · 이전 판"}</div>` : `<span class="muted">문서에서 못 찾음</span>`}</td>`;
       const eCell = !result.evidence.size ? "" : `<td>${ev ? `${link(ev[0].doc, ev[0].page, `${ev[0].doc.docType}(${ev[0].doc.start || "?"}) p.${ev[0].page}`)}${ev[0].latest === false ? " · 이전 판" : ""} ${highlight(ev[0].text, ev[0].matched)}` : ""}</td>`;
-      return `<tr><td><button type="button" class="linkbtn" data-analyze="${esc(x.key)}" data-start="${esc(x.latest.start)}">${esc(x.name)}</button></td>` +
+      return `<tr${i >= SHOW ? ' class="ai-more" hidden' : ""}><td><button type="button" class="linkbtn" data-analyze="${esc(x.key)}" data-start="${esc(x.latest.start)}">${esc(x.name)}</button></td>` +
         `<td>${esc(x.kind)}</td><td>${stBadge(x.status, x.latest.statusBy)}</td><td>${esc(x.latest.start || "")}</td>${vCell}${eCell}<td>${docLinksHtml(x.latest.docs)}</td></tr>`;
-    }).join("") + `</tbody></table></div>` + (result.total > SHOW ? `<p class="note">외 ${result.total - SHOW}개</p>` : "");
+    }).join("") + `</tbody></table></div>` +
+    (result.total > SHOW ? `<div class="ai-morebar"><button type="button" class="mini" data-ai-more="${Math.min(result.total, MAX) - SHOW}">나머지 ${Math.min(result.total, MAX) - SHOW}개 더 보기</button>` +
+      (result.total > MAX ? ` <span class="note">(최대 ${MAX}개까지 표시 · 전체 ${result.total}개)</span>` : "") + `</div>` : "");
   return html;
 }
+
+// 질문 말풍선이 화면 위쪽에 오도록 스크롤
+function scrollToTurn(el) {
+  const top = el.getBoundingClientRect().top + window.scrollY - 16;
+  window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+}
+
+// [더 보기] / [접기]
+document.addEventListener("click", e => {
+  const b = e.target.closest("button[data-ai-more]");
+  if (!b) return;
+  const rows = b.closest(".ai-a").querySelectorAll("tr.ai-more");
+  const open = b.dataset.open !== "1";
+  rows.forEach(r => { r.hidden = !open; });
+  b.dataset.open = open ? "1" : "";
+  b.textContent = open ? "접기" : `나머지 ${b.dataset.aiMore}개 더 보기`;
+});
 
 function addTurn(q, followUp = false) {
   const el = document.createElement("div");
@@ -3370,7 +3389,7 @@ function addTurn(q, followUp = false) {
   const tag = followUp ? `<span class="ai-tag">↳ 이어서</span>` : AI_HISTORY.length ? `<span class="ai-tag new">새 질문</span>` : "";
   el.innerHTML = `<div class="ai-q">${tag}${esc(q)}</div><div class="ai-a"><p class="muted ai-progress">질문 해석 중…</p></div>`;
   $("aiLog").appendChild(el);
-  el.scrollIntoView({ block: "end", behavior: "smooth" });
+  scrollToTurn(el);
   return el.querySelector(".ai-a");
 }
 
@@ -3441,6 +3460,8 @@ async function askAi(q, mode = "auto") {
       `<div class="ai-meta">${esc(by)} · 숫자는 앱 계산값 · 답변 ${aiWrote ? "AI 작성" : "정해진 문장"} · ${sec}초${warn ? ` · <span class="warn">${esc(warn)}</span>` : ""}</div>` +
       (plan.action === "explain" ? "" : resultHtml(result));
     AI_HISTORY.push({ q, plan });
+    scrollToTurn(box.parentElement);
+    $("aiInput").focus({ preventScroll: true });
   } catch (e) {
     box.innerHTML = `<p class="warn">답변 실패: ${esc(e.message)}</p>`;
   } finally {
