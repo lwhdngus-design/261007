@@ -4,9 +4,11 @@
 const { chromium } = require('playwright');
 const fs = require('fs'), path = require('path');
 const URL = process.env.URL || 'http://127.0.0.1:8765/index.html';
-const KEYS = { 든든: '든든종신', 튼튼건강보험: '튼튼건강보험', 암케어: '암케어', 두단계: '두단계', 두갈래: '두갈래', 지킴이: '지킴이', 튼튼간편: '튼튼간편' };
+const KEYS = { 든든: '든든종신', 튼튼건강보험: '튼튼건강보험', 암케어: '암케어', 두단계: '두단계', 두갈래: '두갈래', 지킴이: '지킴이', 튼튼간편: '튼튼간편',
+  행복연금: '행복연금', 알뜰저축: '알뜰저축', 실손: '실손의료', CI종신: 'CI종신', 변액: '변액유니버셜', 어린이: '어린이건강', 간편암: '간편암',
+  치매: '치매간병', 행복정기: '행복정기', 상해: '안심상해', 수술비: '수술비보험', VIP: 'VIP종신', 치아: '치아보험' };
 (async () => {
-  const bank = JSON.parse(fs.readFileSync(path.join(__dirname, 'ai-questions.json'), 'utf8')).filter(c => !process.argv[2] || c.g === process.argv[2]);
+  const bank = JSON.parse(fs.readFileSync(process.env.BANK || path.join(__dirname, 'ai-questions.json'), 'utf8')).filter(c => !process.argv[2] || c.g === process.argv[2]);
   const b = await chromium.launch({ args: ['--no-proxy-server'] });
   const pg = await (await b.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
   const errs = []; pg.on('pageerror', e => errs.push(e.message));
@@ -20,15 +22,16 @@ const KEYS = { 든든: '든든종신', 튼튼건강보험: '튼튼건강보험',
       await askAi(c.q, c.mode === 'follow' ? 'follow' : 'new');
       const turn = document.querySelectorAll('.ai-turn')[n];
       const names = [...turn.querySelectorAll('tbody tr td:first-child')].map(td => td.innerText.trim());
+      const ev = [...turn.querySelectorAll('tbody tr')].map(tr => [...tr.cells].map(c => c.innerText.replace(/\s+/g, ' ').slice(0, 160)).join(' | '));
       return { names, answer: (turn.querySelector('.ai-answer') || {}).innerText || turn.innerText.slice(0, 200),
-        cond: (turn.querySelector('.ai-cond') || {}).innerText || '', table: (turn.querySelector('table') || {}).innerText || '' };
+        cond: (turn.querySelector('.ai-cond') || {}).innerText || '', table: (turn.querySelector('table') || {}).innerText || '', ev };
     }, c);
     const got = Object.keys(KEYS).filter(k => r.names.some(n => n.includes(KEYS[k])));
     let ok = true, why = [];
     if (c.expect) { const exp = [...c.expect].sort(), g = [...got].sort(); if (exp.join() !== g.join()) { ok = false; why.push(`기대 ${exp.join(',') || '없음'} / 결과 ${g.join(',') || '없음'}`); } }
     if (c.count !== undefined && !new RegExp(`(^|[^\\d])${c.count}개`).test(r.answer)) { ok = false; why.push(`개수 ${c.count} 아님: ${r.answer.slice(0, 80)}`); }
     if (c.text && !(r.table + r.answer).includes(c.text)) { ok = false; why.push(`'${c.text}' 없음`); }
-    out.push({ ...c, ok, why: why.join(' · '), cond: r.cond.replace(/\s+/g, ' '), got });
+    out.push({ ...c, ok, why: why.join(' · '), cond: r.cond.replace(/\s+/g, ' '), got, ev: ok ? undefined : r.ev });
     console.log(`${ok ? 'O' : 'X'} [${c.g}] ${c.q}${ok ? '' : `  → ${why.join(' · ')}  | ${r.cond.replace(/\s+/g, ' ')}`}`);
   }
   const pass = out.filter(x => x.ok).length;

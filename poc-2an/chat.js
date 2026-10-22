@@ -41,7 +41,7 @@ function termTokens(w, kind) {
       if (m[0] === "종신") t = "종신";
       else if (m[3]) t = m[4] === "세" ? `${+m[3]}세만기` : `${+m[3]}년`;
       // 표에서 납입기간 값(예: "7년납 3년 4년") 바로 뒤에 붙은 "N년"은 납입기간 칸으로 보고 뺌
-      else if (!(prevPay && m.index - prevEnd <= 2)) t = `${+m[5]}년`;
+      else if (!(prevPay && m.index - prevEnd <= 2) && !/납입기간$|납입$/.test(w.slice(Math.max(0, m.index - 6), m.index))) t = `${+m[5]}년`;
       else { prevEnd = m.index + m[0].length; continue; }
     }
     prevPay = isPay; prevEnd = m.index + m[0].length;
@@ -244,6 +244,8 @@ function hasAll(text, terms) {
   if (!nums.every(t => termHit(text, t))) return false;
   const need = words.length <= 2 ? words.length : Math.ceil(words.length / 2);
   const key = words.reduce((a, t) => (t.length > a.length ? t : a), "");
+  // 원인 말(재해·질병·상해·교통)은 빠지면 뜻이 달라지므로 꼭 있어야 함 (예: 재해 사망 ≠ 사망)
+  if (!words.filter(t => /^(재해|질병|상해|교통|교통상해)$/.test(t)).every(t => termHit(text, t))) return false;
   return (!key || termHit(text, key)) && words.filter(t => termHit(text, t)).length >= need;
 }
 
@@ -329,7 +331,7 @@ function itemCheck(p, plan, v = p.latest) {
     const age = plan.item === "가입나이" && numNorm(plan.item_value).match(/(\d{1,3})세/);
     if (age) {
       const all = it.lines.map(l => numNorm(l.text)).join("/");
-      const ages = [...all.matchAll(/(\d{1,3})세/g)].map(m => +m[1]);
+      const ages = [...all.matchAll(/(\d{1,3})세(?!만기|납|까지납|만|이후연금)/g)].map(m => +m[1]);
       const best = it.lines.find(l => /\d+세/.test(l.text)) || it.lines[0];
       return { ok: ages.length ? Math.max(...ages) >= +age[1] : null, ev: { doc: best.doc, page: best.page, text: it.lines.filter(l => /\d+세/.test(l.text)).slice(0, 3).map(l => l.text).join(" / ") || best.text, matched: [`${Math.max(...ages)}세`] } };
     }
@@ -542,13 +544,14 @@ function detectCond(sq, p) {
   const kept = words.filter(w => {
     const c = norm(w), st = stemOf(c);
     if (drop && drop.test(c) && !/\d/.test(c)) return false;
+    if (st === "암" && !/암(보험|상품)/.test(raw)) return true; // 한 글자 병명 '암'은 값으로 (암보험·암상품은 분류)
     if (TERM_STOP.has(c) || TERM_STOP.has(st) || VALUE_STOP.has(st) || (st.length < 2 && !/\d/.test(st))) return false;
     if (/^(몇|개수|건수|개야|개냐|개지|개인지|몇개|목록|전체|모두|얼마|있|없|되|안|가능|불가|어떻|어때|알려|보여|찾아|조건|내용|중에?|중에서|이상|이하|까지만?)$/.test(st)) return false;
     if (p.category && (c === p.category || c === p.category + "보험" || c === p.category + "상품" || st === p.category + "보험")) return false;
     if (p.status && /판매/.test(c)) return false;
     if (/^(19|20)\d{2}년/.test(c)) return false;
     if (p.product && (p.product.includes(st) || st.includes(p.product))) return false;
-    if (p.features.some(n => FEATURES.find(f => f.name === n).phrases.some(ph => c.includes(ph)))) return false;
+    if (!/\d/.test(c) && p.features.some(n => FEATURES.find(f => f.name === n).phrases.some(ph => c.includes(ph)))) return false;
     return true;
   }).map(w => stemOf(norm(w)));
   // 면책: "안 주는·지급하지 않는"을 물으면 그 뜻(지급하지 않음·보장하지 않음·면책)이 있는 줄만
@@ -556,6 +559,7 @@ function detectCond(sq, p) {
   let item_value;
   if (item === "가입나이") { const a = raw.match(/(\d{1,3})세/); item_value = a ? `${a[1]}세` : ""; }
   else item_value = item_has === "없음" ? "" : kept.filter(w => w.length >= 1).join(" ");
+  if (item === "납입주기" && /(월납|연납|일시납|개월납)만/.test(raw)) item_value += "만"; // "월납만" → 그것만 있는 상품
   if (featItem && !item_value) return null; // 특징만 물은 경우는 특징 조건으로 충분
   if (!item_value && item_has !== "없음" && /있|되는|가능|적용|포함|주는|받|하는/.test(raw)) item_has = "있음";
   // "암 진단비"처럼 병명이 분류 말과 같으면 분류 조건으로 보지 않음 ("암보험 중 …"만 분류)
@@ -664,7 +668,7 @@ function productInQuestion(raw) {
   let best = "";
   for (const x of CATALOG_FOR_AI()) {
     const c = common(raw, norm(x.name));
-    const core = c.replace(/보험|종신|정기|건강|연금|저축|변액|무배당|\(무\)|상품/g, "");
+    const core = c.replace(/보험|종신|정기|건강|연금|저축|변액|무배당|\(무\)|상품|가나다|수술비|수술|치아|상해|치매|간병|실손|의료|어린이|간편|유니버셜|암|진단|입원/g, "");
     if (c.length >= 3 && core.length >= 2 && c.length > best.length) best = c;
   }
   return best;
