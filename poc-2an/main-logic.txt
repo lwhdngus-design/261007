@@ -337,6 +337,18 @@ def split_sentences(text):
     return out
 
 
+def split_near(comp, t):
+    """앞 2글자와 나머지가 가까이(14자 안) 있을 때만 (question.js splitNear 와 같은 규칙)"""
+    a, b = t[:2], t[2:]
+    i = comp.find(a)
+    while i != -1:
+        j = comp.find(b, i + 2)
+        if j != -1 and j - i <= 14:
+            return True
+        i = comp.find(a, i + 1)
+    return False
+
+
 def ask(groups, need, ids, per_doc=2):
     """핵심어 묶음(같은 뜻 말 포함) 중 need개 이상이 한 문장에 있는 원문. 1) SQL로 그만큼 들어 있는 페이지만 고르고 2) 문장 단위로 채점"""
     groups = [[norm(a) for a in g if norm(a)] for g in groups]
@@ -356,7 +368,7 @@ def ask(groups, need, ids, per_doc=2):
         for doc_id, page_no, text in c.execute(sql, params):
             for sent in split_sentences(text):
                 comp = norm(sent)
-                matched = [next((a for a in g if a in comp), "") or (g[0] if split(g[0]) and g[0][:2] in comp and g[0][2:] in comp else "")
+                matched = [next((a for a in g if a in comp), "") or (g[0] if split(g[0]) and split_near(comp, g[0]) else "")
                            for g in groups]
                 hits = sum(1 for m in matched if m)
                 if hits >= need:
@@ -1393,22 +1405,26 @@ function interpretQuestion(text, pure = false) {
 // ---------- 문장 질문 검색: 핵심어 뽑기 ----------
 const QUESTION_CUE = /뭐|무엇|어떤|어느|있어|있나|있을까|있는지|알려|찾아|인가|인지|궁금|\?|상품|경우/;
 // 말끝(조사·어미)을 떼어 낱말 줄기만 남김 — 긴 것부터, 두 글자 이상 남을 때만
-const ENDINGS = ["에서는", "으로는", "이었던", "하는데", "되는데", "합니까", "입니까", "인가요", "있나요",
+const ENDINGS = ["마다", "돼요", "에서는", "으로는", "이었던", "하는데", "되는데", "합니까", "입니까", "인가요", "있나요",
   "해주는", "해준", "받으면", "으면", "하면", "되면", "이라서", "이라", "라서", "이고", "이며", "이면", "에서", "에게", "으로", "로는", "부터", "까지", "보다", "처럼", "에는", "에도", "이나", "이랑", "하는", "되는", "해서",
   "하여", "하고", "하면", "한다", "된다", "했던", "됐던", "였던", "해야", "되어", "돼서", "하지", "되지",
-  "해", "면", "야", "을", "를", "이", "가", "은", "는", "의", "에", "와", "과", "도", "만", "로", "한", "된", "할", "될", "시", "때", "인", "적"];
+  "해", "돼", "면", "야", "을", "를", "이", "가", "은", "는", "의", "에", "와", "과", "도", "만", "로", "한", "된", "할", "될", "시", "때", "인", "적"];
 const TERM_STOP = new Set(["상품", "보험", "보험상품", "뭐", "뭐가", "무엇", "어떤", "어느", "있어", "있나", "있는", "있을까", "있는지", "있었지",
   "알려줘", "알려", "찾아줘", "찾아", "경우", "것", "거", "좀", "혹시", "해당", "관련", "대해", "대한", "내용", "무슨", "뭐야", "뭐였지",
   "뭐였더라", "뭐지", "궁금", "궁금해", "알고", "싶어", "이런", "그런", "어디", "언제", "다른", "같은", "모든", "어떻게", "얼마", "있다", "없다",
   "이것", "그것", "중에", "중", "및", "또는", "그리고", "회사", "우리", "지금", "현재",
   "주는", "받는", "나오는", "해주는", "되는", "하는", "있고", "없는", "때",
-  "나온", "나왔", "나왔어", "나왔나", "나온거", "출시", "출시된", "것만", "거만", "것들", "상품만", "서비스", "보여줘", "보여", "정리해줘", "중에서"]);
+  "나온", "나왔", "나왔어", "나왔나", "나온거", "출시", "출시된", "것만", "거만", "것들", "상품만", "서비스", "보여줘", "보여", "정리해줘", "중에서", "보장", "보상",
+  // 공손한 말투·넓은 말 ("…알려주세요", "상품들", "리스트")
+  "알려주세요", "알려줘요", "알려주실래요", "보여주세요", "보여줘요", "찾아주세요", "있어요", "있나요", "있습니까", "뭐예요", "뭔가요", "뭐에요", "무엇인가요", "인가요", "개인가요", "되나요", "되요", "돼요",
+  "주세요", "상품들", "보험들", "리스트", "목록", "제도", "수는", "개수는", "몇개인가요", "몇개예요", "개입니까", "몇개입니까", "입니까", "습니까",
+  "되나", "나눠", "나누", "고를", "늘려줘", "늘려", "마다"]);
 // 같은 뜻으로 함께 찾을 말 (질문 핵심어에 들어 있으면 바꿔 넣은 말도 찾음)
-const SYNONYMS = [["차감", "공제", "뺀", "제외"], ["기납입", "이미납입한", "납입한"], ["해지", "해약"], ["지급", "지불"], ["돌려", "환급"], ["줄어", "감소", "감액"], ["신청", "청약"], ["자살", "자신을해친", "자해"], ["미만", "이내"], ["가입", "계약"], ["하루", "1일"], ["지나", "지난"], ["더하", "+", "가산"], ["지급하지않", "보장하지않", "면책", "책임을지지않"]];
+const SYNONYMS = [["차감", "공제", "뺀", "제외"], ["기납입", "이미납입한", "납입한"], ["해지", "해약"], ["지급", "지불"], ["돌려", "환급"], ["줄어", "감소", "감액"], ["신청", "청약"], ["자살", "자신을해친", "자해"], ["미만", "이내"], ["가입", "계약"], ["하루", "1일"], ["지나", "지난"], ["더하", "+", "가산"], ["지급하지않", "보장하지않", "면책", "책임을지지않"], ["체증", "더한", "증가", "늘어"], ["가능", "할수있"], ["언제부터", "개시"], ["오르", "오를", "올라", "인상"], ["간병비", "간병연금"], ["비흡연자", "비흡연"], ["절반", "50%"]];
 
 function stemOf(w) {
   for (let k = 0; k < 2; k++) {
-    const e = ENDINGS.find(x => w.endsWith(x) && w.length - x.length >= 2 && !(x === "해" && /[상재손피방이위장]해$/.test(w)) && !(x === "시" && /개시$/.test(w)));
+    const e = ENDINGS.find(x => w.endsWith(x) && w.length - x.length >= 2 && !(x === "해" && /[상재손피방이위장]해$/.test(w) && !/보장해$/.test(w)) && !(x === "시" && /개시$/.test(w)) && !(x === "이" && /나이$/.test(w)));
     if (!e) break;
     w = w.slice(0, -e.length);
   }
@@ -1418,7 +1434,7 @@ function stemOf(w) {
 function questionTerms(text) {
   const out = [];
   // 소수점(1.25%)은 낱말을 나누지 않음
-  for (const tok0 of (text || "").toLowerCase().replace(/(\d)\.(\d)/g, "$1\u2024$2").split(/[\s,?!.·~"'“”‘’()\[\]]+/)) {
+  for (const tok0 of (text || "").toLowerCase().replace(/(\d)\.(?=\d)/g, "$1\u2024").split(/[\s,?!.·~"'“”‘’()\[\]]+/)) {
     const tok = tok0.replace(/\u2024/g, ".");
     const w = stemOf(tok);
     if (w.length < 2 || TERM_STOP.has(w) || TERM_STOP.has(tok)) continue;
@@ -1429,6 +1445,17 @@ function questionTerms(text) {
   return out;
 }
 
+// 붙여 쓴 말이 문서에서는 띄어지거나 사이에 말이 낀 경우("의무가입" ↔ "의무 부가 가입"): 앞 두 글자와 나머지가 가까이(12자 안) 있을 때만
+function splitNear(comp, t) {
+  if (!(t.length >= 4 && /^[가-힣]+$/.test(t))) return false;
+  const a = t.slice(0, 2), b = t.slice(2);
+  for (let i = comp.indexOf(a); i !== -1; i = comp.indexOf(a, i + 1)) {
+    const j = comp.indexOf(b, i + 2);
+    if (j !== -1 && j - i <= 14) return true;
+  }
+  return false;
+}
+
 // 핵심어 → 같은 뜻 말까지 포함한 후보 목록
 function termAlts(t) {
   const alts = [t];
@@ -1436,6 +1463,7 @@ function termAlts(t) {
     if (!t.includes(w)) continue;
     g.filter(x => x !== w).forEach(x => { const a = t.replace(w, x); if (!alts.includes(a)) alts.push(a); });
   }
+  if (/치료비$/.test(t)) alts.push(t.slice(0, -1)); // 치료비 → 치료(를 받았을 때)
   return alts;
 }
 
@@ -1459,7 +1487,7 @@ function splitSentences(text) {
 function scoreSentence(sentence, groups) {
   const comp = norm(sentence);
   // 4글자 이상 한글 낱말은 앞 2글자·나머지가 한 문장에 있어도 일치 (예: 만기환급금 ↔ "만기 시 환급금")
-  const matched = groups.map(g => g.find(a => comp.includes(a)) || (g[0].length >= 4 && /^[가-힣]+$/.test(g[0]) && comp.includes(g[0].slice(0, 2)) && comp.includes(g[0].slice(2)) ? g[0] : ""));
+  const matched = groups.map(g => g.find(a => comp.includes(a)) || (splitNear(comp, g[0]) ? g[0] : ""));
   return { hits: matched.filter(Boolean).length, matched: matched.filter(Boolean), len: comp.length };
 }
 
@@ -1698,7 +1726,7 @@ const ITEM_DEFS = [
   { id: "period", label: "보험기간", re: /보험기간|보장기간|세만기|년만기/, labelRe: /(보험기간|보장기간)[:：]/, words: "보험기간|보장기간", compare: true, heading: SEC2 },
   { id: "pay", label: "납입기간·주기", re: /납입기간|납입주기|납입방법|월납|연납|일시납|\d+년납|전기납/, labelRe: /(납입기간|납입주기|납입방법)[:：]/, words: "납입기간|납입주기|납입방법", compare: true, heading: SEC2 },
   { id: "age", label: "가입나이", re: /가입나이|가입연령|가입가능나이|가입가능연령/, labelRe: /(가입나이|가입연령)[:：]/, words: "가입나이|가입연령", compare: true, heading: SEC2 },
-  { id: "limit", label: "가입한도", re: /가입한도|가입금액|최저보험료|최고보험료|보험료한도|가입가능금액/, labelRe: /(가입한도|가입금액|보험료한도)[:：]/ },
+  { id: "limit", label: "가입한도", re: /가입한도|가입금액|최저보험료|최고보험료|보험료한도|가입가능금액/, labelRe: /(가입한도|가입금액|보험료한도)[:：]/, heading: /^가입한도|^(보험)?가입금액(한도)?에관한사항/ },
   { id: "benefit", label: "보험금 지급사유", re: /지급사유|보험금을지급|지급합니다|지급하는경우/, exclude: /지급하지않|면책/ },
   // 지급기준표를 못 찾았을 때만 쓰는 규칙 (기간 + 지급하지 않음 / 기간 + 비율)
   { id: "exempt", label: "면책", re: /면책기간|부담보|((\d+년|\d+개월|\d+일)(미만|이내|동안)|보장개시일).{0,80}(지급하지않|보장하지않|면책)|(\d+일|\d+년)(이|을)?지난날의다음날|\d+일면책|면책\d+일|고의로자신을해친|보험금을지급하지않는사유/ },
@@ -1727,7 +1755,7 @@ const ITEM_DEFS = [
 
 // 보험종류 구분 (상품명 → 본문 순으로 확인)
 const KIND_WORDS = [["종신", /종신/], ["정기", /정기보험/], ["연금", /연금보험/], ["저축", /저축보험/], ["건강", /건강보험/],
-  ["암", /암보험|암케어/], ["실손", /실손/], ["CI", /CI보험|치명적질병/i], ["변액", /변액/], ["유니버셜", /유니버셜/]];
+  ["암", /암보험|암케어/], ["실손", /실손/], ["CI", /CI보험(?!금)|치명적질병/i], ["변액", /변액/], ["유니버셜", /유니버셜/]];
 const TYPE_FLAGS = [["비갱신형", /비갱신형/], ["갱신형", /(?<!비)갱신형/], ["순수보장형", /순수보장형/], ["환급형", /(?<![저무])환급형/],
   ["저해지형", /저해지/], ["무해지형", /무해지/], ["무배당", /무배당/], ["유배당", /유배당/],
   ["금리확정형", /금리확정|확정금리/], ["금리연동형", /금리연동|공시이율/], ["보기 구분형(제1·제2보기)", /제1보기/]];
@@ -2925,7 +2953,7 @@ document.addEventListener("click", e => {
 // AI가 쓴 문장의 숫자가 계산 결과에 없으면 '확인 필요'로 표시합니다. 외부로 아무것도 보내지 않습니다.
 
 const AI = { ok: false, models: [], model: "", error: "" };
-const AI_KINDS = KIND_WORDS.map(([k]) => k);
+const AI_KINDS = [...KIND_WORDS.map(([k]) => k), "기타"];
 const AI_STATUS = ["판매중", "판매종료"];
 
 // 문서에서 뽑는 값 — words 근처(뒤쪽 80자)에서 읽음
@@ -2960,7 +2988,7 @@ function termTokens(w, kind) {
       if (m[0] === "종신") t = "종신";
       else if (m[3]) t = m[4] === "세" ? `${+m[3]}세만기` : `${+m[3]}년`;
       // 표에서 납입기간 값(예: "7년납 3년 4년") 바로 뒤에 붙은 "N년"은 납입기간 칸으로 보고 뺌
-      else if (!(prevPay && m.index - prevEnd <= 2)) t = `${+m[5]}년`;
+      else if (!(prevPay && m.index - prevEnd <= 2) && !/납입기간$|납입$/.test(w.slice(Math.max(0, m.index - 6), m.index))) t = `${+m[5]}년`;
       else { prevEnd = m.index + m[0].length; continue; }
     }
     prevPay = isPay; prevEnd = m.index + m[0].length;
@@ -2982,7 +3010,7 @@ function termValue(v, kind) {
 // 낱말이 아니라 문서 구조로 판정하는 개념 — 예) 사망보험금이 경과기간에 따라 달라지는 상품(체증형·계단식·체감)
 // 판정: 급부 말(anchor) 뒤 400자 안에 서로 다른 기간 표현(○년 경과·이내·미만·이후…) 2개 이상 +
 //       서로 다른 금액 표현(○%·보험가입금액·○원) 2개 이상(또는 '매1년마다 …를 더한', 체증·체감 같은 증감 표현)
-const PERIOD_RE = /\d+년(?:경과|이내|미만|이후|초과|지난|까지|이상|동안|시점)|제?\d?납입기간(?:종료|만료)일?|납입(?:완료|종료)(?:일|후|이후)?|\d+회차|\d+세(?:이전|이후|부터|까지|이상|미만)|계약일~|~종신/g;
+const PERIOD_RE = /\d+년(?:경과|이내|미만|이후|초과|지난|까지|이상|동안|시점)|제?\d?납입기간(?:종료|만료)일?|납입(?:완료|종료)(?:일|후|이후)?|\d+회차|\d+세(?:이전|이후|부터|까지|이상|미만)|계약일~|~종신|해당일(?:전일)?(?:까지|이후|부터)/g;
 const AMOUNT_RE = /\d+(?:\.\d+)?%|보험가입금액|가입금액|\d[\d,]*만?원/g;
 const CLAUSE_RE = /(?<!\d)\d{1,2}\.(?=[가-힣])|제\d+조[【(]|\(주\)|주\)|별표\d/;
 // 보험금 지급이 늦어질 때의 이자(적립이율) 표, 면책 조항은 '기간별 지급금액'이 아님
@@ -3061,13 +3089,13 @@ const ITEM_WORDS = [
   ["종목·세목", /세목|보험종목/],
   ["해약환급금 일부지급", /일부지급/],
   ["면책", /면책|보장개시|부담보|책임개시|보장하지않|지급하지않|자살|안주는|안줘|못받|\d+일(이)?지나/],
-  ["감액", /감액|\d+%만|절반만|반만|절반|일부만지급/],
+  ["감액", /감액|\d+%만|절반만|반만|절반|일부만지급|\d+년미만.*\d+%|\d+%.*\d+년미만/],
   ["유지보너스", /유지보너스|보너스/],
   ["보험료 선납", /선납/],
   ["보험료 할인", /할인/],
   ["해지계약 부활", /부활|효력회복/],
   ["연체이율", /연체이율|연체이자/],
-  ["보험계약대출", /계약대출|약관대출|대출/],
+  ["보험계약대출", /계약대출|약관대출|(?<!년)대출/],
   ["의무가입", /의무(가입|부가|로|적으로)/],
   ["배당", /배당/],
   ["적립형 계약", /적립형/],
@@ -3094,6 +3122,11 @@ function specOf(p, v = p.latest) {
     if (row.section && lines[0]) {
       const sec = sectionsOf(lines[0].doc).find(x => x.title === row.section);
       if (sec) lines = sec.lines.map(l => ({ text: l.text, doc: sec.doc, page: l.page }));
+    }
+    // 항목명 줄('가입한도: 최저 1억원')로 읽었어도 사업방법서 목차 구역이 따로 있으면 그 내용도 값 찾기에 씀 (예: 최고 가입금액 30억원)
+    if (!row.section && def.heading && lines.length && !["period", "pay", "age"].includes(def.id)) {
+      const sec = R.base.filter(d => d.docType === "사업방법서").flatMap(sectionsOf).find(x => def.heading.test(x.key));
+      if (sec) sec.lines.forEach(l => { if (!lines.some(x => norm(x.text) === norm(l.text))) lines.push({ text: l.text, doc: sec.doc, page: l.page }); });
     }
     items[def.label] = { lines, none: !!row.none, section: !!row.section }; // section: 목차 구역의 이어진 줄 (아니면 낱말로 찾은 떨어진 줄)
   }
@@ -3140,10 +3173,12 @@ function numNorm(s) {
 const VALUE_STOP = new Set(["보험금", "지급", "지급하는", "지급하고", "주는", "받는", "금액", "보장", "상품", "보험", "있는", "되는", "가능한", "가능", "경우", "얼마", "얼마야", "나와", "알려", "알려줘",
   "기간", "내용", "조건", "지급기준표", "기준표", "보여줘", "보여", "이상", "이하", "있어", "있나", "얼마인지", "어떻게", "뭐야", "주나", "줘", "하는", "되나", "않는", "않은", "하지", "않고",
   "미리", "낼", "내는", "붙여야", "붙여", "붙이는", "붙이", "해야하", "드려", "줘야", "묻는", "여부", "받으면", "하면", "되면", "그럼", "그러면", "그", "그중", "중에", "건", "것", "거", "있나요", "인가요", "안", "주는건", "상품은", "안에", "내에", "후", "비율", "수준", "기준", "사유", "정도", "몇", "몇개월", "늘어나", "늘어나는", "증가", "증가하는", "되나요",
-  "예전", "이전", "과거", "옛날", "해야", "하나요", "돼요", "되요", "서비스", "상한", "하한", "높은", "낮은", "기능", "다른", "보험료"]);
+  "받으", "받을", "받을수", "되고", "가입", "걸리", "걸리면", "걸린", "제도", "예전", "이전", "과거", "옛날", "해야", "하나요", "돼요", "되요", "서비스", "상한", "하한", "높은", "낮은", "기능", "다른", "보험료"]);
 function valueTerms(v) {
   const out = [];
-  for (const tok of String(v).replace(/(\d),(?=\d{3})/g, "$1").split(/[\s,?!.·/]+/)) for (const m of numNorm(tok).matchAll(/\d+(?:\.\d+)?(?:만원|억원|원|%|세|년|개월|일|회|배|만)?|[가-힣A-Za-z]+/g)) {
+  // "최대 3개월", "최고 30억원"처럼 한도 말 + 숫자는 붙은 그대로 한 말로 (다른 숫자 옆의 '최대'와 섞이지 않게)
+  v = String(v).replace(/(최대|최소|최고|최저)\s*(\d)/g, "$1$2");
+  for (const tok of String(v).replace(/(\d),(?=\d{3})/g, "$1").replace(/(\d)\.(?=\d)/g, "$1\u2024").split(/[\s,?!.·/]+/).map(x => x.replace(/\u2024/g, "."))) for (const m of numNorm(tok).matchAll(/(?:최대|최소|최고|최저)\d+(?:\.\d+)?(?:만원|억원|원|%|세|년|개월|일|회|배|개)?|\d+(?:\.\d+)?(?:만원|억원|원|%|세|년|개월|일|회|배|종|개|만)?|[가-힣A-Za-z]+/g)) {
     let t = m[0];
     if (!/\d/.test(t)) { t = stemOf(t); if (t.length < 2 || TERM_STOP.has(t) || VALUE_STOP.has(t)) continue; }
     if (!out.includes(t)) out.push(t);
@@ -3153,16 +3188,20 @@ function valueTerms(v) {
 }
 const valueAlts = t => {
   const m = t.match(/^(\d+)배$/);
-  if (m) return [`${m[1] * 100}%`, `${(m[1] - 1) * 100}%추가`];
+  if (m) return [t, `${m[1] * 100}%`, `${(m[1] - 1) * 100}%추가`];
   return [...termAlts(t), ...(/\d만원$/.test(t) ? [t.slice(0, -1)] : [])];
 };
 // 숫자 조건(1000만원·90일·50% 등)은 모두 있어야 하고, 말은 2개까지는 모두·3개 이상이면 절반 이상 (표 칸·줄바꿈으로 말이 갈라지는 경우)
-const termHit = (text, t) => valueAlts(t).some(a => text.includes(a)) || (t.length >= 4 && /^[가-힣]+$/.test(t) && text.includes(t.slice(0, 2)) && text.includes(t.slice(2)));
+// 숫자는 앞에 다른 숫자·소수점이 붙지 않은 곳만 ('5%'가 '1.25%'에 걸리지 않게)
+const numIn = (text, a) => { for (let i = text.indexOf(a); i !== -1; i = text.indexOf(a, i + 1)) if (i === 0 || !/[\d.]/.test(text[i - 1])) return true; return false; };
+const termHit = (text, t) => valueAlts(t).some(a => (/^\d/.test(a) ? numIn(text, a) : text.includes(a))) || splitNear(text, t);
 function hasAll(text, terms) {
   const nums = terms.filter(t => /\d/.test(t)), words = terms.filter(t => !/\d/.test(t));
   if (!nums.every(t => termHit(text, t))) return false;
   const need = words.length <= 2 ? words.length : Math.ceil(words.length / 2);
   const key = words.reduce((a, t) => (t.length > a.length ? t : a), "");
+  // 원인 말(재해·질병·상해·교통)은 빠지면 뜻이 달라지므로 꼭 있어야 함 (예: 재해 사망 ≠ 사망)
+  if (!words.filter(t => /^(재해|질병|상해|교통|교통상해|[a-z]{2,4})$/i.test(t)).every(t => termHit(text, t.toLowerCase()) || termHit(text, t.toUpperCase()))) return false;
   return (!key || termHit(text, key)) && words.filter(t => termHit(text, t)).length >= need;
 }
 
@@ -3170,7 +3209,9 @@ function hasAll(text, terms) {
 const joinLines = ls => ls.reduce((o, l) => (o && l.text.length <= 3 && !/\d/.test(l.text) ? o + l.text : o + (o ? " / " : "") + l.text), "");
 
 // 지급기준표 줄 묶기: 짧은 조각("금", "단비")은 앞 줄에 붙이고, 급부명 줄(…보험금·진단비·일당·수술비 (제○조))부터 다음 급부명 전까지를 한 덩어리로
-const BENEFIT_HEAD = /^[가-힣·\s]{1,14}(보험금|진단비|진단금|진단자금|급여금|일당|수술비|입원비|보장금|연금)\s*(\(제\s*\d+\s*조\))?$/;
+const BENEFIT_HEAD = /^[가-힣·\s]{0,14}(보험금|진단비|진단금|진단자금|급여금|일당|수술비|입원비|보장금|연금|치료비)\s*(\(제\s*\d+\s*조\))?$/;
+// 급부명으로 시작하고 같은 줄에 지급사유가 이어지는 줄 ("암수술비 암으로 수술을 받았을 때 … 200만원")
+const BENEFIT_START = /^[가-힣·]{0,14}(보험금|진단비|진단금|급여금|일당|수술비|입원비|보장금|치료비)\s+\S/;
 function payBlocks(pay) {
   const merged = [];
   for (const x of pay) {
@@ -3180,7 +3221,7 @@ function payBlocks(pay) {
   }
   const blocks = [];
   for (const m of merged) {
-    const head = !m.note && BENEFIT_HEAD.test(m.text.replace(/\s+/g, " ").trim());
+    const t = m.text.replace(/\s+/g, " ").trim(), head = !m.note && (BENEFIT_HEAD.test(t) || BENEFIT_HEAD.test(t.replace(/\s+/g, "")) || BENEFIT_START.test(t));
     if (head || m.note || !blocks.length || blocks[blocks.length - 1].note || blocks[blocks.length - 1].doc !== m.doc) blocks.push({ doc: m.doc, page: m.page, note: m.note, lines: [] });
     blocks[blocks.length - 1].lines.push(m);
   }
@@ -3207,6 +3248,7 @@ function payMatch(pay, terms) {
     for (let i = 0; i + size <= pay.length; i++) {
       const w = pay.slice(i, i + size);
       if (w.some(x => x.doc !== w[0].doc || !!x.note !== !!w[0].note)) continue; // 표 줄과 주석을 섞지 않음
+      if (w.slice(1).some(x => { const t = x.text.replace(/\s+/g, " ").trim(); return !x.note && (BENEFIT_START.test(t) || BENEFIT_HEAD.test(t.replace(/\s+/g, ""))); })) continue; // 다른 급부 줄과 섞지 않음
       if (ok(w)) {
         let end = i + size;
         while (!AMT.test(pay.slice(i, end).map(x => x.text).join("")) && end < Math.min(pay.length, i + size + 6) && pay[end].doc === w[0].doc) end++;
@@ -3230,9 +3272,13 @@ function itemCheck(p, plan, v = p.latest) {
     const ls = [...(sp.cyc || []), ...((sp.items["납입기간·주기"] || {}).lines || [])];
     const toks = [...new Set(ls.flatMap(l => numNorm(l.text).match(/월납|연납|3개월납|6개월납|일시납/g) || []))];
     if (!toks.length) return { ok: null };
-    const want = numNorm(plan.item_value || "").match(/월납|연납|3개월납|6개월납|일시납/g) || [];
+    let want = numNorm(plan.item_value || "").match(/월납|연납|3개월납|6개월납|일시납/g) || [];
     const only = /만$|만되|만가능|만있/.test(numNorm(plan.item_value || "")) || /만/.test(plan.item_value || "");
-    const other = /말고|외에|이외|빼고|아닌|다른/.test(plan.item_value || "");
+    let other = /말고|외에|이외|빼고|아닌|다른/.test(plan.item_value || "");
+    // "월납 말고 연납도" → 연납이 있는 상품 (말고 뒤에 주기가 있으면 그 주기)
+    const after = other && numNorm(plan.item_value).split(/말고|외에|이외|빼고/)[1];
+    const want2 = after && after.match(/월납|연납|3개월납|6개월납|일시납/g);
+    if (want2) { want = want2; other = false; }
     const ok = !want.length ? plan.item_has !== "없음" : other ? toks.some(t => !want.includes(t)) : only ? toks.length === want.length && want.every(w => toks.includes(w)) : want.every(w => toks.includes(w));
     const l = ls.find(x => /월납|연납|일시납|개월납/.test(numNorm(x.text))) || ls[0];
     return { ok, ev: { doc: l.doc, page: l.page, text: `납입주기: ${toks.join(", ")}`, matched: want } };
@@ -3248,11 +3294,13 @@ function itemCheck(p, plan, v = p.latest) {
     const age = plan.item === "가입나이" && numNorm(plan.item_value).match(/(\d{1,3})세/);
     if (age) {
       const all = it.lines.map(l => numNorm(l.text)).join("/");
-      const ages = [...all.matchAll(/(\d{1,3})세/g)].map(m => +m[1]);
+      const ages = [...all.matchAll(/(\d{1,3})세(?!만기|납|까지납|만|이후연금)/g)].map(m => +m[1]);
       const best = it.lines.find(l => /\d+세/.test(l.text)) || it.lines[0];
-      return { ok: ages.length ? Math.max(...ages) >= +age[1] : null, ev: { doc: best.doc, page: best.page, text: it.lines.filter(l => /\d+세/.test(l.text)).slice(0, 3).map(l => l.text).join(" / ") || best.text, matched: [`${Math.max(...ages)}세`] } };
+      const mode = /세부터/.test(numNorm(plan.item_value)) ? "min" : /세까지만/.test(numNorm(plan.item_value)) ? "max" : "";
+      return { ok: !ages.length ? null : mode === "min" ? Math.min(...ages) === +age[1] : mode === "max" ? Math.max(...ages) === +age[1] : Math.max(...ages) >= +age[1], ev: { doc: best.doc, page: best.page, text: it.lines.filter(l => /\d+세/.test(l.text)).slice(0, 3).map(l => l.text).join(" / ") || best.text, matched: [`${Math.max(...ages)}세`] } };
     }
-    const terms = valueTerms(plan.item_value);
+    // 암보험의 '암'처럼 상품 이름에 이미 있는 병명은 줄에 없어도 됨 ("1년 미만 진단 시 50% 감액")
+    const terms = valueTerms(plan.item_value).filter(t => !(t === "암" && /암/.test(p.name)));
     for (let i = 0; i < it.lines.length; i++) {
       if (!terms.some(t => termHit(numNorm(it.lines[i].text), t))) continue; // 값이 들어 있는 줄부터
       const w = it.lines.slice(i, i + (it.section ? 4 : 1)); // 목차 구역은 표 머리줄과 값 줄이 떨어진 경우까지, 낱말로 찾은 줄은 그 줄만
@@ -3311,7 +3359,7 @@ document.addEventListener("click", e => {
 });
 
 // ---------- 1) 질문 → 조건 ----------
-const PLAN_KEYS = ["action", "category", "status", "year_from", "year_to", "product", "text", "field", "value", "group_by", "concept", "item", "item_value", "item_has", "year_basis", "revised", "all_versions", "versions_min"]; // + features·feature_logic·features_not·also(배열)
+const PLAN_KEYS = ["action", "category", "status", "year_from", "year_to", "product", "text", "field", "value", "group_by", "concept", "item", "item_value", "item_has", "year_basis", "revised", "all_versions", "versions_min", "change"]; // + features·feature_logic·features_not·also(배열)
 const PLAN_ACTIONS = ["count", "list", "average", "max", "min", "find", "explain", "newest", "oldest"];
 const PLAN_GROUPS = ["", "연도", "판매상태", "분류"];
 
@@ -3411,13 +3459,14 @@ function cleanPlan(p) {
   if (!["first", "any", "revision"].includes(out.year_basis)) out.year_basis = "";
   if (!["yes", "no"].includes(out.revised)) out.revised = "";
   if (out.all_versions !== "yes") out.all_versions = "";
-  out.versions_min = /^\d{1,2}$/.test(out.versions_min) ? out.versions_min : "";
+  out.versions_min = /^\d{1,2}=?$/.test(out.versions_min) ? out.versions_min : "";
   if (!["있음", "없음"].includes(out.item_has)) out.item_has = /없/.test(out.item_has) ? "없음" : /있/.test(out.item_has) ? "있음" : "";
   if (out.item) out.text = "";
   if (out.concept) { out.text = ""; if (out.action === "list") out.action = "find"; }
+  if (!/^[^→]+→[^→]+$/.test(out.change)) out.change = "";
   ["year_from", "year_to"].forEach(k => { const m = out[k].match(/(19|20)\d{2}/); out[k] = m ? m[0] : ""; });
   if (["average", "max", "min"].includes(out.action) && !out.field) out.action = "list";
-  if (!out.item_value && out.item === "납입주기" && !out.item_has) out.item_has = "있음";
+  if (!out.item_value && out.item && !out.item_has) out.item_has = "있음"; // "일부지급형 상품", "유배당 상품" → 그 항목이 있는 상품
   return out;
 }
 
@@ -3428,7 +3477,7 @@ const FOLLOW_UP_RE = /^\s*(그\s*중|그중|그럼|그러면|그리고|거기서
 
 // "A 있고 B도 되는", "A이면서 B" → 구간별 조건
 function splitConds(q) {
-  return q.split(/있고|이면서|면서|그리고|하고\s|이고\s|및|,|(?<=[가-힣])도\s/).map(x => x.trim()).filter(x => x.length >= 2);
+  return q.replace(/없고\s*/g, "없음, ").replace(/도\s+(없|안\s?되|안\s?하)/g, " $1").split(/있고|되고\s|이면서|면서|그리고|하고\s|이고\s|및|,(?!\d{3})|(?<=[가-힣])도\s/).map(x => x.trim()).filter(x => x.length >= 2);
 }
 
 // 한 구간에서 사업방법서 항목·지급기준표 조건(또는 보험기간·납입기간 값) 찾기
@@ -3457,24 +3506,33 @@ function detectCond(sq, p) {
   let item_has = /없는|없어|없음|없나|안되|불가|미적용|해당없|아닌|아니/.test(raw.replace(/(지급|보장|보상|해당)하지않/g, "")) ? "없음" : "";
   // 값: 항목 말·질문 말투·조건 말을 뺀 나머지 (지급기준표는 진단비·금액 같은 말이 곧 값)
   const drop = item === PAYTABLE_ITEM || item === "납입주기" ? null : item === "가입한도" ? /^(가입한도|한도)/ : item === "면책" ? /면책|부담보|책임개시|보장하지않|지급하지않|안주|못받/ : new RegExp(re.source);
-  const words = sq.replace(/(\d),(?=\d{3})/g, "$1").replace(/(\d)\.(\d)/g, "$1·$2").split(/[\s,?!.()]+/).filter(Boolean).map(w => w.replace(/·/g, "."));
-  const kept = words.filter(w => {
+  const words = sq.replace(/(\d),(?=\d{3})/g, "$1").replace(/(\d)\.(?=\d)/g, "$1·").split(/[\s,?!.()]+/).filter(Boolean).map(w => w.replace(/·/g, "."));
+  // 띄어 쓴 항목 이름("중도 인출", "보험계약 대출", "간편 심사")의 조각은 값이 아님
+  const im = [PAYTABLE_ITEM, "납입주기", "가입한도"].includes(item) ? null : raw.match(re); // 가입한도의 '최저보험료' 등은 값
+  let at = 0;
+  const spans = words.map(w => { const c = norm(w), i = raw.indexOf(c, at); if (i >= 0) at = i + c.length; return [i, i + c.length]; });
+  const inItem = k => im && spans[k][0] >= 0 && spans[k][0] < raw.indexOf(im[0]) + im[0].length && spans[k][1] > raw.indexOf(im[0]) && raw.indexOf(im[0]) >= 0;
+  const piece = (w, k) => { const c = norm(w); return !/\d/.test(c) && (inItem(k) || (drop && drop.test(c))); };
+  const kept = words.filter((w, k) => {
+    if (piece(w, k)) return false;
     const c = norm(w), st = stemOf(c);
     if (drop && drop.test(c) && !/\d/.test(c)) return false;
+    if (st === "암" && !/암(보험|상품)/.test(raw)) return true; // 한 글자 병명 '암'은 값으로 (암보험·암상품은 분류)
     if (TERM_STOP.has(c) || TERM_STOP.has(st) || VALUE_STOP.has(st) || (st.length < 2 && !/\d/.test(st))) return false;
     if (/^(몇|개수|건수|개야|개냐|개지|개인지|몇개|목록|전체|모두|얼마|있|없|되|안|가능|불가|어떻|어때|알려|보여|찾아|조건|내용|중에?|중에서|이상|이하|까지만?)$/.test(st)) return false;
     if (p.category && (c === p.category || c === p.category + "보험" || c === p.category + "상품" || st === p.category + "보험")) return false;
     if (p.status && /판매/.test(c)) return false;
     if (/^(19|20)\d{2}년/.test(c)) return false;
     if (p.product && (p.product.includes(st) || st.includes(p.product))) return false;
-    if (p.features.some(n => FEATURES.find(f => f.name === n).phrases.some(ph => c.includes(ph)))) return false;
+    if (!/\d/.test(c) && p.features.some(n => FEATURES.find(f => f.name === n).phrases.some(ph => c.includes(ph)))) return false;
     return true;
   }).map(w => stemOf(norm(w)));
   // 면책: "안 주는·지급하지 않는"을 물으면 그 뜻(지급하지 않음·보장하지 않음·면책)이 있는 줄만
   if (item === "면책" && /안주|안줘|지급하지않|보장하지않|못받/.test(raw)) kept.push("지급하지않");
   let item_value;
-  if (item === "가입나이") { const a = raw.match(/(\d{1,3})세/); item_value = a ? `${a[1]}세` : ""; }
+  if (item === "가입나이") { const a = raw.match(/(\d{1,3})세(부터|까지만)?/); item_value = a ? `${a[1]}세${a[2] || ""}` : ""; } // 부터: 최저 나이 · 까지만: 최고 나이
   else item_value = item_has === "없음" ? "" : kept.filter(w => w.length >= 1).join(" ");
+  if (item === "납입주기" && /(월납|연납|일시납|개월납)만/.test(raw)) item_value += "만"; // "월납만" → 그것만 있는 상품
   if (featItem && !item_value) return null; // 특징만 물은 경우는 특징 조건으로 충분
   if (!item_value && item_has !== "없음" && /있|되는|가능|적용|포함|주는|받|하는/.test(raw)) item_has = "있음";
   // "암 진단비"처럼 병명이 분류 말과 같으면 분류 조건으로 보지 않음 ("암보험 중 …"만 분류)
@@ -3489,22 +3547,28 @@ function rulePlan(q) {
   const notFeat = Q.features.filter(f => f.phrases.some(ph => new RegExp(ph.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[형이가은는]{0,2}(아닌|아니|제외|빼고|말고)").test(raw))).map(f => f.name);
   // "암"은 "암보험·암상품"일 때만 분류 (그 밖에는 병명)
   if (Q.category === "암" && !/암(보험|상품)/.test(raw)) Q.category = "";
+  if (Q.category === "종신" && /종신연금/.test(raw) && !/종신보험/.test(raw)) Q.category = ""; // 종신연금형은 연금의 세목
+  if (Q.category === "정기" && /확정기간|정기간/.test(raw) && !/정기(보험|상품)/.test(raw)) Q.category = ""; // '확정기간'의 '정기'는 분류 아님
+  if (Q.category === "CI" && !/ci보험(?!금)/.test(raw)) Q.category = ""; // 'CI보험금'은 급부 이름
+  if (!Q.category && /기타(분류|상품|보험|로분류)/.test(raw)) Q.category = "기타";
   const p = { action: "list", category: Q.category, status: Q.status, year_from: Q.from.slice(0, 4), year_to: Q.to.slice(0, 4),
     product: "", features: Q.features.map(f => f.name).filter(n => !notFeat.includes(n)), features_not: notFeat, feature_logic: /또는|혹은|이나|거나|둘중|중하나/.test(raw) ? "or" : "and",
     text: "", field: "", group_by: "" };
   if (/몇개|몇건|몇종|개수|건수|얼마나있/.test(raw)) p.action = "count";
   const rawA = raw.replace(/최저(보험료|가입금액|가입|보증이율|보증)|최고(보험료|가입금액|가입|한도)|최대\d+|최대한도|평균공시이율/g, ""); // 항목 이름 속 '최저·최고'는 계산 요청이 아님
   if (/평균/.test(rawA)) p.action = "average";
-  else if (/가장최근|제일최근|최근에출시|최신상품|가장늦게|가장새로/.test(rawA)) p.action = "newest";
-  else if (/가장오래|제일오래|가장먼저출시|최초출시|처음출시/.test(rawA)) p.action = "oldest";
+  else if (/가장최근|제일최근|최근에출시|최근에나온|최신상품|가장늦게|가장새로|가장나중/.test(rawA)) p.action = "newest";
+  else if (/가장오래|제일오래|가장먼저|제일먼저|최초출시|처음출시|처음나온|최초로나온/.test(rawA)) p.action = "oldest";
   else if (/최고|최대|가장높|제일높|가장많|제일많/.test(rawA)) p.action = "max";
   else if (/최저|최소|가장낮|제일낮|가장적|제일적/.test(rawA)) p.action = "min";
   // 개정·판매일자 기준 연도, 개정 이력, 예전 판
   if (/개정/.test(raw)) p.year_basis = "revision"; else if (/판매일자|버전/.test(raw)) p.year_basis = "any";
-  if (/개정이력|개정된적|개정판이있|여러번개정|개정이있|개정된상품/.test(raw) && !/(19|20)\d{2}년/.test(raw)) { p.revised = /없|안된|안 된/.test(raw) ? "no" : "yes"; p.year_basis = ""; }
+  if (/개정이력|개정된적|개정판이있|여러번개정|개정이있|개정된상품|개정안된|개정되지않|개정이없|개정안한/.test(raw) && !/(19|20)\d{2}년/.test(raw)) { p.revised = /없|안된|안한|않/.test(raw) ? "no" : "yes"; p.year_basis = ""; }
   if (/예전|이전판|과거|옛날|구판|개정전/.test(raw)) p.all_versions = "yes";
   const vm = raw.match(/판매일자[가이]?(\d+)개이상|(\d+)번이상개정|개정[이을]?(\d+)번이상|개정(\d+)회이상/);
   if (vm) { const n = +(vm[1] || vm[2] || vm[3] || vm[4]); p.versions_min = String(vm[1] ? n : n + 1); p.year_basis = ""; } // 개정 n번 = 판 n+1개
+  const ve = !vm && raw.match(/판매일자[가이]?(\d+)개(인|뿐|짜리)|판매일자[가이]?(\d+)개(?!이상)/);
+  if (ve) { p.versions_min = (ve[1] || ve[3]) + "="; p.year_basis = ""; } // 정확히 n개
   p.field = Object.keys(AI_FIELDS).find(f => AI_FIELDS[f].words.some(w => raw.includes(w))) || "";
   // 숫자 값 조건: "예정이율 2.25%", "2.5% 이상"
   if (AI_FIELDS[p.field] && !AI_FIELDS[p.field].terms && !AI_FIELDS[p.field].text) {
@@ -3523,19 +3587,30 @@ function rulePlan(q) {
   const y = raw.match(/((?:19|20)\d{2})년(이후|부터)/);
   if (y) { p.year_from = y[1]; p.year_to = ""; }
   const y2 = raw.match(/((?:19|20)\d{2})년(이전|까지)/);
-  if (y2) { p.year_to = y2[1]; p.year_from = ""; }
-  const prod = productInQuestion(raw);
+  if (y2) { p.year_to = y2[1]; if (!(y && y2.index > y.index)) p.year_from = ""; } // "2022년부터 2023년까지"는 둘 다
+  const dec = raw.match(/((?:19|20)\d)0년대/);
+  if (dec) { p.year_from = dec[1] + "0"; p.year_to = dec[1] + "9"; }
+  const prod = productInQuestion(raw, q);
   if (prod) p.product = prod;
   // "예정이율이 뭐야?"처럼 용어 뜻을 묻는 질문
   if (p.field && !prod && p.action === "list" && /뭐야|뭔가요|무엇인가|무엇이야|이란|란뭐|뜻|의미|설명해/.test(raw)) p.action = "explain";
+  if (/의무납입/.test(raw) && p.field === "납입기간" && !p.value) { p.field = ""; p.text = "의무납입기간"; p.action = p.action === "list" ? "find" : p.action; } // 의무납입기간(변액)은 문장에서
+  // "최저보증이율이 1.5%에서 1.0%로 바뀐 상품" → 판매일자(판) 사이에 값이 바뀐 상품
+  const NUMV = "\\d+(?:\\.\\d+)?\\s*(?:%|만원|억원|원|세|년|개월|일|회)";
+  const chg = q.match(new RegExp(`(${NUMV})\\s*에서\\s*(${NUMV})\\s*(?:으로|로)\\s*(?:바뀐|바뀌|변경|달라|줄어|늘어|낮아|높아|올라|내려|인하|인상|축소|확대)`));
+  if (chg) {
+    const words = questionTerms(q.replace(chg[0], " ")).filter(t => !/^\d/.test(t) && !/^(바뀐|변경된|상품|판매일자|개정|개정된|예전|이전)$/.test(t));
+    Object.assign(p, { change: `${chg[1].replace(/\s+/g, "")}→${chg[2].replace(/\s+/g, "")}`, text: words.join(" "), action: p.action === "count" ? "count" : "find", field: "", value: "" });
+    return cleanPlan(p);
+  }
   // 남은 핵심어가 2개 이상이면 문서 문장에서 찾을 내용
-  const rest = questionTerms(q).filter(t => !(p.field && /^\d{1,3}(년|세)/.test(t)) && !/짜리|^만기$/.test(t) &&
+  const rest = questionTerms(q).filter(t => !(p.field && /^\d{1,3}(년|세)/.test(t)) && !/짜리|^(19|20)\d0년대/.test(t) && !(p.field && /^만기$/.test(t)) &&
     !/^(몇|개수|건수|개야|개냐|개지|개인지|연도별|년도별|상태별|판매상태별|분류별)/.test(t) &&
-    !/^(판매|판매된|종료|종료된|중지|중지된|단종|현재|있나요|있습니|종이야|여부|묻는|평균|최고|최저|최대|최소|가장|제일|목록|전체|모두|얼마|이후|이전|부터|까지|상한|하한|높은|낮은|많은|적은|최근|최근에|최신|오래된|처음|개정|개정된|이력|판매일자|버전|예전|과거|출시|출시된|시작한)$/.test(t) &&
+    !/^(판|판에|판에서|판의|판매|판매된|종료|종료된|중지|중지된|단종|현재|있나요|있습니|종이야|여부|묻는|평균|분류|분류된|기타|였던|이었던|바뀐|변경된|달라진|최고|최저|최대|최소|가장|제일|목록|전체|모두|얼마|이후|이전|부터|까지|상한|하한|높은|낮은|많은|적은|최근|최근에|최신|오래된|처음|개정|개정된|이력|판매일자|버전|예전|과거|출시|출시된|시작한)$/.test(t) &&
     !Object.values(AI_FIELDS).some(f => f.words.some(w => t.includes(w) || w.startsWith(t))) && !(prod && prod.includes(t)) &&
-    !Q.features.some(f => f.phrases.some(ph => t.includes(ph) || ph.includes(t))));
+    !Q.features.some(f => f.phrases.some(ph => t.includes(ph) || ph.includes(t) || ph.includes(t.replace(/형$/, "")))));
   const noCond = !p.category && !p.status && !p.year_from && !p.year_to && !p.product && !p.features.length && !p.field && !p.group_by && !p.revised && !["count", "newest", "oldest"].includes(p.action);
-  if (!p.versions_min && (rest.length >= 2 || (rest.length === 1 && noCond && rest[0].length >= 3))) { p.text = rest.join(" "); if (p.action === "list") p.action = "find"; }
+  if (!p.versions_min && (rest.length >= 2 || (rest.length === 1 && ((noCond && rest[0].length >= 2) || (rest[0].length >= 3 && !/(이면서|면서|이고|이며|인데)$|종신|정기|건강|연금|저축|실손|변액/.test(rest[0]))) && /[가-힣]{2}/.test(rest[0]) && !/^(19|20)\d0년대/.test(rest[0])))) { p.text = rest.join(" "); if (p.action === "list") p.action = "find"; }
   // 기간에 따라 급부(보험금)가 달라지는지 묻는 질문 → 개념 판정
   if (conceptAsked(raw)) {
     p.concept = /사망/.test(raw) ? "사망보험금 기간별 차등" : "보험금 기간별 차등";
@@ -3544,6 +3619,18 @@ function rulePlan(q) {
     // "매년 10%씩", "150%까지"처럼 숫자가 있으면 지급기준표에서 그 숫자도 확인
     const pct = q.match(/\d+(?:\.\d+)?\s*%/g);
     if (pct) { p.item = PAYTABLE_ITEM; p.item_value = [...new Set(pct.map(x => x.replace(/\s+/g, "")))].join(" ") + (/사망/.test(raw) ? " 사망보험금" : ""); p.features = p.features.filter(n => n !== "체증형"); }
+  }
+  // "최대 150%까지 체증"처럼 체증형에 숫자가 있으면 지급기준표에서 그 숫자도 확인
+  if (!p.concept && p.features.includes("체증형") && /\d+(?:\.\d+)?\s*%/.test(q)) {
+    p.concept = "보험금 기간별 차등"; p.features = p.features.filter(n => n !== "체증형");
+    p.item = PAYTABLE_ITEM; p.item_value = [...new Set(q.match(/\d+(?:\.\d+)?\s*%/g).map(x => x.replace(/\s+/g, "")))].join(" ");
+    p.text = ""; if (p.action === "list") p.action = "find";
+  }
+  // "최고 가입나이 75세", "가입나이 최저가 30세" → 가입나이 최고·최저 값 조건
+  const ageMm = raw.match(/(최고|최대|상한|최저|최소|하한)(?:가입나이|가입연령|나이)?[이가은는]?(\d{1,3})세/) || (/가입나이|가입연령/.test(raw) && raw.match(/(최고|최대|상한|최저|최소|하한)[이가은는]?(\d{1,3})세/));
+  if (ageMm && !p.product) {
+    Object.assign(p, { action: p.action === "count" ? "count" : "list", item: "가입나이", item_value: `${ageMm[2]}세${/최고|최대|상한/.test(ageMm[1]) ? "까지만" : "부터"}`, item_has: "", field: "", value: "", text: "", also: [] });
+    return cleanPlan(p);
   }
   // 사업방법서 항목·지급기준표 조건 — "할인 있고 선납도 되는"처럼 이어진 조건은 나눠서 각각
   if (!p.concept && !["average", "max", "min", "newest", "oldest"].includes(p.action)) {
@@ -3568,11 +3655,22 @@ function rulePlan(q) {
       if (list.some(c => c.item)) { p.text = ""; if (p.action === "find") p.action = "list"; }
     }
   }
+  // "1년마다 갱신" → 갱신형 + 보험기간 1년
+  const ren = raw.match(/(\d{1,2})년(마다|단위로?|주기로?)?갱신/);
+  if (ren && !p.item) { p.field = "보험기간"; p.value = `${ren[1]}년`; p.text = ""; if (p.action === "find") p.action = "list"; if (!p.features.includes("갱신형")) p.features.push("갱신형"); }
+  // "100세만기 20년납", "종신이면서 10년납" → 보험기간 + 납입기간 두 값 (같은 표 줄에서 확인)
+  const rq = raw.replace(/(19|20)\d{2}년/g, "");
+  const perT = rq.match(/(?<!\d)\d{1,3}(?:년|세)만기|종신(?!보험|상품|연금|형)/), payT = rq.match(/(?<!\d)\d{1,3}(?:년|세)납|전기납|일시납/);
+  if (!p.item && !p.concept && perT && payT && !(p.also || []).some(c => c.field)) {
+    if (perT[0] === "종신" && p.category === "종신" && !/종신(보험|상품)/.test(raw)) p.category = "";
+    Object.assign(p, { field: "보험기간", value: perT[0], also: [{ field: "납입기간", value: payT[0] }], text: "" });
+    if (p.action === "find") p.action = "list";
+  }
   return cleanPlan(p);
 }
 
 // 질문 속 상품명: 상품명과 가장 길게 겹치는 부분(4글자 이상, '종신보험' 같은 분류 말만 겹치면 제외)
-function productInQuestion(raw) {
+function productInQuestion(raw, q = raw) {
   const common = (a, b) => {
     let best = "";
     for (let i = 0; i < a.length; i++) for (let j = i + best.length + 1; j <= a.length; j++) {
@@ -3583,10 +3681,20 @@ function productInQuestion(raw) {
   let best = "";
   for (const x of CATALOG_FOR_AI()) {
     const c = common(raw, norm(x.name));
-    const core = c.replace(/보험|종신|정기|건강|연금|저축|변액|무배당|\(무\)|상품/g, "");
+    const core = c.replace(/보험|종신|정기|건강|연금|저축|변액|무배당|\(무\)|상품|가나다|수술비|수술|치아|상해|치매|간병|실손|의료|어린이|간편|유니버셜|암|진단|입원/g, "");
     if (c.length >= 3 && core.length >= 2 && c.length > best.length) best = c;
   }
-  return best;
+  if (best) return best;
+  // 질문 첫 말이 한 상품 이름에만 있는 짧은 말이면 그 상품 ("어린이 골절진단비", "치아 면책기간", "VIP 체증 비율")
+  // — "…상품", 목록을 묻는 질문은 여러 상품에서 찾는 질문이므로 제외
+  if (/상품|목록|몇개(?!월)|리스트/.test(raw)) return "";
+  const w0 = norm(String(q).trim().split(/\s+/)[0] || "");
+  for (const w of [...new Set([w0, stemOf(w0), w0.replace(/(보험|상품)$/, ""), stemOf(w0).replace(/(보험|상품)$/, "")])]) {
+    if (w.length < 2 || /^\d/.test(w) || /^(수술|입원|진단|사망|재해|보험|상품|가나다|무배당)$/.test(w)) continue;
+    const hits = CATALOG_FOR_AI().filter(x => norm(x.name).includes(w));
+    if (hits.length === 1) return w;
+  }
+  return "";
 }
 
 // ---------- 2) 조건 → 계산 ----------
@@ -3670,9 +3778,133 @@ async function applyItem(products, cond, progress, allVersions) {
   return { products: keep, ev, unread };
 }
 
-async function executePlan(plan, progress) {
+// 상품을 하나 지정하고 그 상품의 내용을 묻는 질문 ("어린이 골절진단비 얼마야", "CI종신 2017년 판 선지급 비율")
+//  → 조건으로 거르지 않고, 그 상품(연도를 말하면 그 해 판매일자) 문서에서 질문 말이 가장 많이 있는 줄을 보여 줌
+function detailWords(question, p) {
+  const name = norm(p.name), out = [];
+  // 낱말 줄기 대신 조사만 뗀 말 ('가입한도'가 '가입'으로 줄지 않게), 숫자는 값 말로
+  for (const tok of question.split(/[\s,?!.()]+/).filter(Boolean)) {
+    if (/\d/.test(tok)) {
+      valueTerms(tok).filter(t => !/^\d+(\.\d+)?$/.test(t)).forEach(t => out.push(t)); // 단위 없는 숫자('제1…'의 1)는 빼고
+      const whole = norm(tok).replace(/(얼마야|얼마|은|는|이|가|을|를|의|은요|는요)$/, "");
+      if (/[가-힣]{2}/.test(whole) && /^제?\d/.test(whole)) out.push(whole); // 제1영업보험료, 1종수술비
+      continue;
+    }
+    let w = norm(tok).replace(/(얼마야|얼마예요|얼마인가요|얼마|알려줘|알려주세요)$/, "");
+    w = w.replace(/(이야|이에요|예요|인가요|인가|은요|는요|하면|되면|으면|이면|면|해요|해|하나|나요|은|는|이|가|을|를|의|에|에서|으로|로|도|만|야|요)$/, m => (m === "해" && /[상재손피방위장]해$/.test(w) ? m : m === "이" && /나이$/.test(w) ? m : ""));
+    if (w.length >= 3) w = w.replace(/(까지|부터)$/, m => (w === "언제부터" ? m : ""));
+    if (w.length >= 3 && /나$/.test(w) && !/(나이|하나)$/.test(w)) w = w.slice(0, -1); // 오르나 → 오르
+    if (w.length >= 2 && !TERM_STOP.has(w) && !VALUE_STOP.has(w)) out.push(w);
+  }
+  // "몇 종·몇 회·몇 개월" → 그 단위 숫자가 있는 줄, "종류·유형" → '…형' 이름이 있는 줄
+  const mm = norm(question).match(/몇(종|회|개월|개|세|년|일|번)/);
+  if (mm) out.push("#\\d+" + mm[1]);
+  if (/종류|유형|타입/.test(question)) out.push("#[가-힣]{2,}?형", "#[가-힣]+, ?[가-힣]+"); // '…형' 이름, '가, 나, 다' 나열
+  const ws = [...new Set(out)].filter(t => !/^(19|20)\d{2}년$/.test(t) && !/^(판|알려|보여|얼마|어떻게|뭐|무엇|있|되|조건|내용|종류|얼마야|받아|받을|받나|보상돼|언제|얼마나|있을까|되나|되나요|있나요|어떤|무슨|몇)$/.test(t));
+  // 상품 이름 말: '연금·치매·치아'처럼 내용에도 쓰는 말은 남기고(가볍게), 나머지는 뺌
+  const named = t => t.length >= 2 && !/\d/.test(t) && (name.includes(t) || name.includes(t.replace(/(보험|상품)$/, "")));
+  const out2 = ws.filter(t => !named(t) || /^(연금|치매|치아|수술비|간병|상해|저축|실손|암)$/.test(t));
+  // '보장 내용', '특징'처럼 넓게 물으면 상품 특징·보장 줄
+  if (!out2.some(t => !named(t)) && /보장|특징|요약|어떤상품|무슨상품|내용/.test(norm(question))) out2.push("보장", "특징");
+  return out2.some(t => !named(t)) ? out2 : [];
+}
+const BENEFIT_WORD = /(보험금|진단비|진단금|수술비|치료비|일당|급여|입원|통원|진단|수술|사망|장해|연금)$/;
+// 질문 말이 많이·길게 맞는 줄, 숫자(금액·%)가 있는 줄, 지급기준표 줄을 우선 — 같은 점수면 앞의 것(지급기준표 → 사업방법서 → …)
+function bestLines(units, words, opt = {}) {
+  const scored = [];
+  for (const u of units) {
+    const c = numNorm(u.text), hit = words.filter(t => (t.startsWith("#") ? new RegExp(t.slice(1)).test(c) : termHit(c, t)));
+    const lead = hit.some(t => !t.startsWith("#") && new RegExp(`^(\\(?\\d+\\)|\\d+\\.|[가-하]\\.)?${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[:：]`).test(c)) ? 2 : 0; // "제1영업보험료: …" 처럼 그 말을 풀이한 줄
+    if (!hit.length) continue;
+    // 금액·숫자는 질문 말 뒤에 나와야 그 말의 값 (앞 줄 금액이 끼어든 조각은 제외)
+    const from = Math.min(...hit.map(t => { const i = valueAlts(t).map(a => c.indexOf(a)).filter(i => i >= 0); return i.length ? Math.min(...i) : 0; }));
+    const body = c.slice(from).replace(/^(\d{1,2}\.|[가-하]\.)/, "").replace(/최초\d+회한|\d+회당|\d+일당/g, "");
+    const score = lead + hit.reduce((a, t) => a + (opt.light && opt.light.includes(t) ? 1 : t.startsWith("#") ? 3 * Math.min(3, (c.match(new RegExp(t.slice(1), "g")) || []).length) : Math.min(t.length, 6) + (/\d/.test(t) ? 4 : 0)), 0) + (opt.ageHint && /\d+세/.test(c) ? 3 : 0) + (/\d+(%|만원|억원|원|세|년|일|회|개월|배)|계약자적립액|보험가입금액/.test(body) ? 2 : /\d/.test(body) ? 1 : 0) + (u.pay && hit.some(t => BENEFIT_WORD.test(t) && !(opt.light && opt.light.includes(t))) ? 2 + (u.block ? 1 : 0) : 0) + (/(니다|한다|있다)\.?$/.test(u.text.trim()) ? 1 : 0) - u.text.length / 300;
+    scored.push({ ...u, score, matched: hit });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored;
+}
+async function productDetail(plan, p, question) {
+  const words = detailWords(question, p);
+  if (!words.length) return null;
+  await ensureSpecs([p], null, true);
+  const inYear = v => { const y = (v.start || "").slice(0, 4); return (!plan.year_from || y >= plan.year_from) && (!plan.year_to || y <= plan.year_to); };
+  // '예전 판' 질문은 판매일자마다 이어서
+  if (plan.all_versions === "yes" && p.versions.length > 1) {
+    const parts = [];
+    for (const v of p.versions) { const e = detailIn(plan, p, v, words); if (e) parts.push({ v, e }); }
+    if (parts.length) return { v: parts[0].v, words, ev: { ...parts[0].e, text: parts.map(x => `[${x.v.start}] ${x.e.text}`).join(" ‖ ").slice(0, 700), matched: [...new Set(parts.flatMap(x => x.e.matched))] } };
+  }
+  let v = (plan.year_from || plan.year_to) && p.versions.find(inYear) || p.latest;
+  let ev = detailIn(plan, p, v, words);
+  // 최신 판에 없는 말이면 이전 판매일자 문서에서 (예: 개정으로 빠진 급부)
+  if (!ev && !plan.year_from && !plan.year_to) for (const o of p.versions.slice(1)) { const e = detailIn(plan, p, o, words); if (e) { v = o; ev = e; break; } }
+  return { v, ev: ev ? { ...ev, old: v !== p.latest ? v.start : undefined } : { doc: null, text: `문서에서 '${words.join(" ")}'을(를) 찾지 못함`, matched: [] }, words };
+}
+// 한 판매일자 문서에서: 항목 규칙으로 찾은 근거 + 질문 말이 가장 많이 맞는 줄
+function detailIn(plan, p, v, words) {
+  let ev = null;
+  if (plan.item && plan.item !== PAYTABLE_ITEM) {
+    const val = valueTerms(plan.item_value).filter(t => words.includes(t)).join(" ");
+    for (const cond of [{ item: plan.item, item_value: val, item_has: "" }, ...(plan.item !== PAYTABLE_ITEM && val ? [{ item: plan.item, item_value: "", item_has: "" }] : [])]) {
+      const r = itemCheck(p, cond, v);
+      if (r.ok && r.ev && r.ev.doc) { ev = r.ev; break; }
+    }
+  }
+  {
+    const sp = specFor(p, v), units = [];
+    // 지급기준표: 급부 덩어리, 그리고 이어진 1~4줄 (표 칸이 여러 줄로 읽힌 경우)
+    const pay = sp.pay || [];
+    payBlocks(pay).forEach(b => units.push({ doc: b.doc, page: b.page, text: joinLines(b.lines), pay: true, block: true }));
+    for (let n = 1; n <= 4; n++) for (let i = 0; i + n <= pay.length; i++) {
+      const w = pay.slice(i, i + n);
+      if (w.every(x => x.doc === w[0].doc && !!x.note === !!w[0].note) && !/^\d/.test(w[0].text) && w[0].text.length > 3) units.push({ doc: w[0].doc, page: w[0].page, text: joinLines(w), pay: true });
+    }
+    [...v.docs].sort(byDocPriority).filter(d => SOURCE_TYPES.includes(d.docType) && !d.error && d.pages).forEach(d => {
+      const ls = docLines(d);
+      ls.forEach((l, i) => {
+        if (isTocLine(l.text)) return;
+        // 제목 줄("3. 연금개시나이에 관한 사항")·짧은 줄은 다음 줄까지 붙여서
+        let text = l.text, j = i;
+        // 다음 목차 제목("2. 보험기간, …")에서는 멈춤
+        while (j + 1 < ls.length && j - i < 2 && ls[j + 1].page === l.page && (/에관한사항$/.test(norm(ls[j].text)) || norm(text).length < 25) && !/^\d{1,2}\.\s*[가-힣]/.test(ls[j + 1].text.trim())) text += " " + ls[++j].text;
+        units.push({ doc: d, page: l.page, text });
+      });
+    });
+    const nm = norm(p.name), sc = bestLines(units, words, { light: words.filter(t => nm.includes(t)), ageHint: plan.item === "가입나이" || plan.field === "가입나이" });
+    // 질문 말이 원문에 그대로 없으면(예: '면책기간' → 보장개시일 문장) 항목 규칙으로 찾은 근거
+    if (sc.length) {
+      const same = (a, b) => norm(a).includes(norm(b)) || norm(b).includes(norm(a));
+      const top = [sc[0], ...sc.slice(1).filter(x => x.score >= sc[0].score * 0.6 && !same(sc[0].text, x.text)).slice(0, 1)].filter(x => !ev || !same(ev.text, x.text)).slice(0, ev ? 1 : 2);
+      if (top.length) ev = ev ? { ...ev, text: `${ev.text} / ${top[0].text}`.slice(0, 500), matched: [...new Set([...(ev.matched || []), ...top[0].matched])] }
+        : { doc: top[0].doc, page: top[0].page, text: top.map(x => x.text).join(" / ").slice(0, 400), matched: [...new Set(top.flatMap(x => x.matched))] };
+    }
+  }
+  return ev;
+}
+
+async function executePlan(plan, progress, question = "") {
   let products = CATALOG_FOR_AI();
   const notes = [];
+  // 상품 하나를 지정한 내용 질문
+  if (question && plan.product && (["list", "find"].includes(plan.action) || (plan.action === "count" && /몇\s*(종|회|개월|세|년|일|번)/.test(question))) && !plan.group_by) {
+    const named = products.filter(p => norm(p.name).includes(norm(plan.product).replace(/^\(무\)/, "")));
+    const d = named.length === 1 ? await productDetail(plan, named[0], question) : null;
+    if (d) {
+      const p = named[0];
+      const values = plan.field ? await fieldValues([p], plan.field) : new Map();
+      notes.push(`상품을 지정한 질문: ${p.name}의 ${d.v.start} 판매일자 문서에서 '${d.words.filter(w => !w.startsWith("#")).join(" ")}'이(가) 있는 원문 (조건으로 거르지 않음)`);
+      // "치아 임플란트 200만원"처럼 금액·숫자를 물었는데 원문 줄에 그 숫자가 없으면 '해당 없음'
+      const nums = d.words.filter(w => /^\d/.test(w) && /\d(만원|억원|원|%|세|년|개월|일|회|배)$/.test(w));
+      if (nums.length && d.ev.doc && !nums.every(n => termHit(numNorm(d.ev.text), n))) {
+        notes.push(`${p.name} 문서에서 ${nums.join(", ")}을(를) 찾지 못함 — 가장 가까운 원문: ${d.ev.text.slice(0, 120)}`);
+        return { plan, products: [], evidence: new Map(), values: new Map(), total: 0, notes, unread: [], itemEv: null, unreadLabel: "" };
+      }
+      return { plan, products: [p], evidence: new Map(), values, total: 1, notes, unread: [], itemEv: new Map([[p.key, d.ev]]), itemLabel: "질문 내용 원문", detail: d,
+        unreadLabel: "" };
+    }
+  }
   if (plan.category) products = products.filter(p => p.kind === plan.category);
   if (plan.status) products = products.filter(p => p.status === plan.status);
   if (plan.year_from || plan.year_to) {
@@ -3682,7 +3914,11 @@ async function executePlan(plan, progress) {
       : plan.year_basis === "revision" ? p.versions.slice(0, -1).some(v => inYear((v.start || "").slice(0, 4))) : inYear(yearOf(p)));
     if (plan.year_basis === "revision") notes.push("연도 조건: 그 해에 개정된 판매일자(첫 출시 판 제외)가 있는 상품");
   }
-  if (plan.versions_min) { products = products.filter(p => p.versions.length >= +plan.versions_min); notes.push(`판매일자(판) ${plan.versions_min}개 이상`); }
+  if (plan.versions_min) {
+    const n = parseInt(plan.versions_min, 10), exact = plan.versions_min.endsWith("=");
+    products = products.filter(p => exact ? p.versions.length === n : p.versions.length >= n);
+    notes.push(`판매일자(판) ${n}개${exact ? "" : " 이상"}`);
+  }
   if (plan.revised) { products = products.filter(p => (p.versions.length > 1) === (plan.revised === "yes")); notes.push(`개정 이력 ${plan.revised === "yes" ? "있음(판매일자 2개 이상)" : "없음"}`); }
   if (plan.product) products = products.filter(p => norm(p.name).includes(norm(plan.product).replace(/^\(무\)/, "")));
   // '체증형'은 구조 판정(계단식·매년 증가 지급기준표)과 합쳐서 찾음
@@ -3698,11 +3934,40 @@ async function executePlan(plan, progress) {
   }
   // 문서 문장 조건: 핵심어가 한 문장에 모인 상품만
   const evidence = new Map();
-  if (plan.text) {
+  if (plan.change) {
+    const [a, b] = plan.change.split("→"), terms = questionTerms(plan.text);
+    const form = { keyword: "", from: "", to: "", category: "", status: "", docType: "" };
+    const g1 = new Map(groupSentenceHits((await sentenceAnswer({ Q: { terms: [...terms, a] }, form })).hits).map(g => [g.key, g.hits]));
+    const g2 = new Map(groupSentenceHits((await sentenceAnswer({ Q: { terms: [...terms, b] }, form })).hits).map(g => [g.key, g.hits]));
+    products = products.filter(p => {
+      const h1 = g1.get(p.key), h2 = g2.get(p.key);
+      if (!h1 || !h2) return false;
+      const x = h1.find(h => h2.some(k => (k.doc.start || "") > (h.doc.start || ""))); // 예전 판 a → 뒤 판 b
+      if (!x) return false;
+      const y = h2.find(k => (k.doc.start || "") > (x.doc.start || ""));
+      evidence.set(p.key, [{ ...y, text: `[${x.doc.start}] ${x.text} → [${y.doc.start}] ${y.text}`, matched: [...(x.matched || []), ...(y.matched || [])] }]);
+      return true;
+    });
+    notes.push(`판매일자 사이 변경: ${terms.join("·")} ${a} → ${b} (앞 판에 ${a}, 뒤 판에 ${b}가 같은 문장에)`);
+  } else if (plan.text) {
     const terms = questionTerms(plan.text);
     if (terms.length) {
       const r = await sentenceAnswer({ Q: { terms }, form: { keyword: "", from: "", to: "", category: "", status: "", docType: "" } });
-      groupSentenceHits(r.hits).forEach(g => evidence.set(g.key, g.hits));
+      // 숫자 하나 + 말: 그 말에 가장 가까운 같은 단위 숫자가 물은 숫자인 문장만 ("선지급 80%" ≠ "장해지급률 80% … 50%를 선지급")
+      const nums = terms.filter(t => /^\d/.test(t)), wds = terms.filter(t => !/^\d/.test(t));
+      const near = h => {
+        const c = numNorm(h.text), want = numNorm(nums[0]), unit = want.replace(/^[\d.]+/, "");
+        const ns = [...c.matchAll(new RegExp(`(?<![\\d.])\\d+(?:\\.\\d+)?${unit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "g"))].map(m => ({ i: m.index, v: m[0] }));
+        if (!ns.length) return true;
+        const pos = a => { const o = []; for (let i = c.indexOf(a); i !== -1; i = c.indexOf(a, i + 1)) o.push(i); return o; };
+        // 말 뒤 40자 안의 숫자는 모두 그 말의 값("5년 이내 1.25%, 10년 이내 1.0%"), 말 앞은 바로 앞 숫자만
+        return wds.some(w => termAlts(w).some(a => pos(a).some(i => {
+          const e = i + a.length, before = ns.filter(n => n.i < i).pop();
+          return ns.some(n => n.i >= e && n.i - e <= 40 && n.v === want) || (before && before.v === want && i - before.i <= 40);
+        })));
+      };
+      const hits = nums.length === 1 && wds.length && terms.length <= 3 ? r.hits.filter(near) : r.hits;
+      groupSentenceHits(hits).forEach(g => evidence.set(g.key, g.hits));
       products = products.filter(p => evidence.has(p.key));
       notes.push(`문장 조건: 핵심어 ${terms.join("·")} 중 ${termsNeeded(terms.length)}개 이상이 한 문장에`);
     }
@@ -3731,6 +3996,22 @@ async function executePlan(plan, progress) {
     products = products.filter(p => { const v = vals.get(p.key); return v && (v.tokens ? v.tokens.includes(c.value) : String(v.value) === c.value); });
     notes.push(`값 조건: ${c.field} '${c.value}'`);
   }
+  // 보험기간 + 납입기간: 두 값이 같은 표 줄에 있는지 (다른 보험기간 줄에만 그 납입기간이 있으면 제외)
+  const payC = plan.also.find(c => c.field === "납입기간");
+  if (plan.field === "보험기간" && plan.value && payC) {
+    const keep = [];
+    for (const p of products) {
+      const docs = p.latest.docs.filter(d => ["사업방법서", "상품요약서"].includes(d.docType) && !d.error);
+      await ensurePages(docs);
+      const ls = docs.filter(d => d.pages).flatMap(d => docLines(d)).map(l => l.compact);
+      const withPay = ls.filter(l => termTokens(l, "pay").includes(payC.value));
+      const pers = l => termTokens(l, "period").filter(t => /만기|종신/.test(t) || /^\d+년$/.test(t) && /\d+년만기/.test(l));
+      const ok = withPay.some(l => termTokens(l, "period").includes(plan.value)) || !withPay.some(l => pers(l).length);
+      if (ok) keep.push(p);
+    }
+    if (keep.length < products.length) notes.push(`보험기간 '${plan.value}'과 납입기간 '${payC.value}'이 같은 표 줄에 없는 상품 ${products.length - keep.length}개 제외`);
+    products = keep;
+  }
   const values = plan.field ? await fieldValues(products, plan.field) : new Map();
   let unread = [];
   if (plan.value && AI_FIELDS[plan.field] && AI_FIELDS[plan.field].terms) {
@@ -3750,10 +4031,11 @@ async function executePlan(plan, progress) {
     }
   }
   if (["newest", "oldest"].includes(plan.action) && products.length) {
-    const first = p => p.versions[p.versions.length - 1].start || "";
+    // '가장 최근에 개정된'은 최신 판매일자, 그 밖에는 첫 출시일 기준
+    const first = plan.revised === "yes" || plan.year_basis === "revision" ? p => p.versions[0].start || "" : p => p.versions[p.versions.length - 1].start || "";
     const best = products.map(first).filter(Boolean).sort()[plan.action === "newest" ? products.length - 1 : 0];
     products = products.filter(p => first(p) === best);
-    notes.push(`${plan.action === "newest" ? "가장 최근" : "가장 먼저"} 출시(첫 판매일자 ${best})`);
+    notes.push(plan.revised === "yes" || plan.year_basis === "revision" ? `${plan.action === "newest" ? "가장 최근" : "가장 먼저"} 개정(판매일자 ${best})` : `${plan.action === "newest" ? "가장 최근" : "가장 먼저"} 출시(첫 판매일자 ${best})`);
   }
   const result = { plan, products, evidence, values, total: products.length, notes, unread: [...unread, ...itemUnread], itemEv,
     unreadLabel: plan.item ? `${plan.item}을 문서에서 확인하지 못한 상품` : plan.field ? `${plan.field}을 문서에서 못 읽은 상품` : "" };
@@ -3802,7 +4084,7 @@ function factsFor(result) {
       return { 상품명: x.name, 분류: x.kind, 판매상태: x.status, 최신판매일자: x.latest.start,
         ...(v ? { [p.field]: f.text ? v.value : `${v.value}${f.unit}`, 근거: `${v.doc.docType} p.${v.page}` } : p.field ? { [p.field]: "문서에서 못 찾음" } : {}),
         ...(ev ? { 근거문장: ev[0].text.slice(0, 220), 문장근거: `${ev[0].doc.docType}(${ev[0].doc.start || "?"}) p.${ev[0].page}` } : {}),
-        ...(result.itemEv && result.itemEv.get(x.key) ? { [p.item]: result.itemEv.get(x.key).text.slice(0, 220) } : {}) };
+        ...(result.itemEv && result.itemEv.get(x.key) ? { [result.itemLabel || p.item]: result.itemEv.get(x.key).text.slice(0, 220) } : {}) };
     }),
   };
   if (result.total > 25) facts.생략 = `외 ${result.total - 25}개`;
@@ -3815,6 +4097,10 @@ function factsFor(result) {
 function templateAnswer(result) {
   const p = result.plan, f = AI_FIELDS[p.field], cond = planText(p).filter(x => !x.startsWith("값 ")).join(", ") || "전체";
   if (p.action === "explain") return "연결된 기초서류에서 답할 수 있는 질문(개수·목록·평균·문서 내용 찾기)이 아닙니다. 용어 설명 같은 질문은 로컬 AI가 연결되어 있을 때 답합니다.";
+  if (result.detail) {
+    const x = result.products[0], e = result.detail.ev;
+    return e.doc ? `${x.name}의 ${e.doc.docType}(${result.detail.v.start}) p.${e.page} 원문: "${e.text}"` : `${x.name}의 문서에서 '${result.detail.words.join(" ")}'을(를) 찾지 못했습니다. 아래 기초서류를 열어 확인하세요.`;
+  }
   if (!result.total) return p.action === "count" ? `조건(${cond})에 맞는 상품은 0개입니다.` : `조건(${cond})에 맞는 상품을 찾지 못했습니다.`;
   let s = `조건(${cond})에 맞는 상품은 ${result.total}개입니다.`;
   if (result.groups) s += " " + result.groups.map(([k, n]) => `${k} ${n}개`).join(", ") + ".";
@@ -3872,7 +4158,7 @@ function resultHtml(result) {
   if (!result.products.length) return html + unreadHtml;
   const SHOW = 10, MAX = 300; // 처음엔 10개만, 나머지는 [더 보기]
   html += `<div class="table-scroll"><table class="ai-table"><thead><tr><th>상품명</th><th>분류</th><th>판매상태</th><th>최신 판매일자</th>` +
-    (p.field ? `<th>${esc(p.field)}</th>` : "") + (result.evidence.size ? `<th>근거 문장</th>` : "") + (result.itemEv ? `<th>${esc([p.item, ...p.also.filter(c => c.item).map(c => c.item)].filter(Boolean).join(" · "))}</th>` : "") + `<th>기초서류</th></tr></thead><tbody>` +
+    (p.field ? `<th>${esc(p.field)}</th>` : "") + (result.evidence.size ? `<th>근거 문장</th>` : "") + (result.itemEv ? `<th>${esc(result.itemLabel || [p.item, ...p.also.filter(c => c.item).map(c => c.item)].filter(Boolean).join(" · "))}</th>` : "") + `<th>기초서류</th></tr></thead><tbody>` +
     result.products.slice(0, MAX).map((x, i) => {
       const v = result.values.get(x.key), ev = result.evidence.get(x.key);
       const link = (d, page, label) => `<a href="#" data-open="${DOCS.indexOf(d)}" data-page="${page}">${esc(label)}</a>`;
@@ -3919,10 +4205,16 @@ function addTurn(q, followUp = false) {
 function mergePlan(prev, cur) {
   const out = { ...prev, action: cur.action };
   ["category", "status", "year_from", "year_to", "product", "text", "field", "value", "group_by", "concept", "item", "item_value", "item_has"].forEach(k => { if (cur[k]) out[k] = cur[k]; });
-  if (cur.item && cur.item !== prev.item) { out.item_value = cur.item_value; out.item_has = cur.item_has; }
+  if (cur.item && cur.item !== prev.item) {
+    out.item_value = cur.item_value; out.item_has = cur.item_has;
+    // 이전 항목 조건은 함께 유지 ("재해사망 있는 상품" → "그 중 비흡연 할인 있는 것")
+    if (prev.item) out.also = [{ item: prev.item, item_value: prev.item_value, item_has: prev.item_has }, ...(prev.also || []), ...(cur.also || [])];
+  }
   if (cur.features.length) { out.features = cur.features; out.feature_logic = cur.feature_logic; }
   if (cur.features_not.length) out.features_not = cur.features_not;
-  if (cur.also.length) out.also = cur.also;
+  if (cur.also.length && !(cur.item && prev.item && cur.item !== prev.item)) out.also = cur.also;
+  // 이전 값 조건(보험기간 100세만기)에 다른 값 조건(납입기간 30년납)을 더하면 둘 다
+  if (cur.field && prev.field && cur.field !== prev.field && prev.value) out.also = [...(out.also || []), { field: prev.field, value: prev.value }];
   ["year_basis", "revised", "all_versions", "versions_min"].forEach(k => { if (cur[k]) out[k] = cur[k]; });
   if (cur.year_from && !cur.year_to) out.year_to = "";
   if (cur.year_to && !cur.year_from) out.year_from = "";
@@ -3962,6 +4254,13 @@ async function askAi(q, mode = "auto") {
         if (!plan.value && rp.value) { plan.field = rp.field; plan.value = rp.value; filled.push("값 조건"); }
         if (!plan.also.length && rp.also.length && plan.item === rp.item) { plan.also = rp.also; filled.push("조건 여러 개"); }
         ["year_basis", "revised", "all_versions", "versions_min"].forEach(k => { if (!plan[k] && rp[k]) { plan[k] = rp[k]; filled.push(k === "revised" ? "개정 이력" : k === "all_versions" ? "이전 판" : "연도 기준"); } });
+        if (!plan.product && rp.product) { plan.product = rp.product; filled.push("상품명"); }
+        // 규칙으로 분명히 찾은 분류·판매상태·연도·특징·기간 값을 AI가 빠뜨렸으면 더함
+        ["category", "status", "year_from", "year_to"].forEach(k => { if (!plan[k] && rp[k]) { plan[k] = rp[k]; filled.push({ category: "분류", status: "판매상태", year_from: "연도", year_to: "연도" }[k]); } });
+        if (!plan.features.length && rp.features.length) { plan.features = rp.features; plan.feature_logic = rp.feature_logic; filled.push("특징"); }
+        if (!plan.features_not.length && rp.features_not.length) { plan.features_not = rp.features_not; filled.push("특징 제외"); }
+        if (!plan.field && rp.field) { plan.field = rp.field; filled.push("값 항목"); }
+        if (rp.change && plan.change !== rp.change) { Object.assign(plan, { change: rp.change, text: rp.text, item: "", item_value: "", item_has: "", concept: "" }); if (plan.action === "list") plan.action = "find"; filled.push("판 사이 변경"); }
         if (["newest", "oldest"].includes(rp.action) && plan.action !== rp.action) { plan.action = rp.action; filled.push("최근·오래된 출시"); }
         if (!plan.item && rp.item && !plan.concept) {
           Object.assign(plan, { item: rp.item, item_value: rp.item_value, item_has: rp.item_has, text: "" });
@@ -3972,8 +4271,9 @@ async function askAi(q, mode = "auto") {
         }
         const conds = x => ["category", "status", "year_from", "year_to", "product", "text", "field", "value", "concept", "item"].filter(k => x[k]).length + (x.features.length ? 1 : 0);
         if (!conds(plan) && conds(rp)) { plan = { ...rp, action: plan.action === "list" ? rp.action : plan.action }; filled.push("조건 전체"); }
-        if (followUp) by += " · 이전 질문 조건 이어받음";
-        if (filled.length) by += ` + 규칙 보완(${filled.join("·")})`;
+        // 이어서 질문: AI가 이전 조건을 빠뜨려도 이전 조건은 유지 (규칙 해석과 같은 방식)
+        if (followUp) { plan = mergePlan(last.plan, plan); by += " · 이전 질문 조건 이어받음"; }
+        if (filled.length) by += ` + 규칙 보완(${[...new Set(filled)].join("·")})`;
       } catch (e) {
         plan = followUp ? mergePlan(last.plan, rulePlan(q)) : rulePlan(q); warn = `AI 해석 실패(${e.message}) → 규칙 해석으로 대신함`;
       }
@@ -3982,7 +4282,7 @@ async function askAi(q, mode = "auto") {
       if (followUp) by += " · 이전 질문 조건 이어받음";
     }
     progress("2/3 앱이 상품 목록·원문에서 계산하는 중…");
-    const result = await executePlan(plan, progress);
+    const result = await executePlan(plan, progress, followUp ? "" : q);
     answer = templateAnswer(result);
     let aiWrote = false;
     if (useAi && ($("aiWrite") ? $("aiWrite").checked : true)) {
