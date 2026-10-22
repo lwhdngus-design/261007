@@ -452,28 +452,41 @@ function resultHtml(result) {
   return html;
 }
 
-function addTurn(q) {
+function addTurn(q, followUp = false) {
   const el = document.createElement("div");
-  el.className = "ai-turn";
-  el.innerHTML = `<div class="ai-q">${esc(q)}</div><div class="ai-a"><p class="muted ai-progress">질문 해석 중…</p></div>`;
+  el.className = "ai-turn" + (followUp ? " follow" : "");
+  const tag = followUp ? `<span class="ai-tag">↳ 이어서</span>` : AI_HISTORY.length ? `<span class="ai-tag new">새 질문</span>` : "";
+  el.innerHTML = `<div class="ai-q">${tag}${esc(q)}</div><div class="ai-a"><p class="muted ai-progress">질문 해석 중…</p></div>`;
   $("aiLog").appendChild(el);
   el.scrollIntoView({ block: "end", behavior: "smooth" });
   return el.querySelector(".ai-a");
 }
 
-async function askAi(q) {
+// 이전 질문 조건을 이어받아 바뀐 부분만 덮어씀 (로컬 AI가 없을 때의 이어서 질문)
+function mergePlan(prev, cur) {
+  const out = { ...prev, action: cur.action };
+  ["category", "status", "year_from", "year_to", "product", "text", "field", "group_by", "concept"].forEach(k => { if (cur[k]) out[k] = cur[k]; });
+  if (cur.features.length) { out.features = cur.features; out.feature_logic = cur.feature_logic; }
+  if (cur.year_from && !cur.year_to) out.year_to = "";
+  if (cur.year_to && !cur.year_from) out.year_from = "";
+  return cleanPlan(out);
+}
+
+// mode: "new"(새 질문 — 이전 대화와 무관), "follow"(이전 질문에 이어서), "auto"(Enter: '그 중' 등으로 시작하면 이어서)
+async function askAi(q, mode = "auto") {
   if (aiBusy || !q.trim()) return;
+  const followUp = AI_HISTORY.length > 0 && (mode === "follow" || (mode === "auto" && FOLLOW_UP_RE.test(q)));
+  const last = followUp ? AI_HISTORY[AI_HISTORY.length - 1] : null;
   if (!DOCS.length) { addTurn(q).innerHTML = `<p class="warn">기초서류가 아직 연결되지 않았습니다. 연결(또는 샘플 읽기)이 끝난 뒤 물어보세요.</p>`; return; }
-  aiBusy = true; $("aiSend").disabled = true;
-  const box = addTurn(q), t0 = performance.now();
+  aiBusy = true; syncAiButtons();
+  const box = addTurn(q, followUp), t0 = performance.now();
   const progress = t => { const p = box.querySelector(".ai-progress"); if (p) p.textContent = t; };
   const useAi = AI.ok && AI.model;
   let plan, by = "규칙 해석", answer, warn = "";
   try {
     if (useAi) {
       progress(`1/3 로컬 AI(${AI.model})가 질문을 조건으로 바꾸는 중… (PC 사양에 따라 수십 초)`);
-      const followUp = FOLLOW_UP_RE.test(q) && AI_HISTORY.length > 0;
-      const prev = followUp ? AI_HISTORY.slice(-1).map(h => `이전 질문: ${h.q}\n이전 조건: ${JSON.stringify(h.plan)}`).join("\n") : "";
+      const prev = followUp ? `이전 질문: ${last.q}\n이전 조건: ${JSON.stringify(last.plan)}\n(이번 질문은 위 질문에 이어지는 질문이다. 이전 조건을 이어받아 바뀐 부분만 고친다.)` : "";
       try {
         const raw = await aiChat([{ role: "system", content: plannerPrompt() }, { role: "user", content: (prev ? prev + "\n\n" : "") + "질문: " + q }], planSchema());
         plan = cleanPlan(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
@@ -481,7 +494,7 @@ async function askAi(q) {
         // 안전장치: AI가 놓친 조건을 규칙 해석으로 보완 (구조 판정, 또는 AI 조건이 하나도 없을 때)
         const rp = rulePlan(q), filled = [];
         // 질문에 없는 구조 판정은 뺌 (이전 질문에서 잘못 이어받는 것 방지)
-        const prevConcept = followUp && AI_HISTORY[AI_HISTORY.length - 1].plan.concept;
+        const prevConcept = followUp && last.plan.concept;
         if (plan.concept && !conceptAsked(norm(q)) && plan.concept !== prevConcept) { plan.concept = ""; filled.push("구조 판정 제외"); if (plan.action === "find" && !plan.text) plan.action = "list"; }
         if (!plan.concept && rp.concept) {
           plan.concept = rp.concept; plan.text = ""; filled.push("구조 판정");
@@ -494,9 +507,12 @@ async function askAi(q) {
         if (followUp) by += " · 이전 질문 조건 이어받음";
         if (filled.length) by += ` + 규칙 보완(${filled.join("·")})`;
       } catch (e) {
-        plan = rulePlan(q); warn = `AI 해석 실패(${e.message}) → 규칙 해석으로 대신함`;
+        plan = followUp ? mergePlan(last.plan, rulePlan(q)) : rulePlan(q); warn = `AI 해석 실패(${e.message}) → 규칙 해석으로 대신함`;
       }
-    } else plan = rulePlan(q);
+    } else {
+      plan = followUp ? mergePlan(last.plan, rulePlan(q)) : rulePlan(q);
+      if (followUp) by += " · 이전 질문 조건 이어받음";
+    }
     progress("2/3 앱이 상품 목록·원문에서 계산하는 중…");
     const result = await executePlan(plan);
     answer = templateAnswer(result);
@@ -516,24 +532,37 @@ async function askAi(q) {
   } catch (e) {
     box.innerHTML = `<p class="warn">답변 실패: ${esc(e.message)}</p>`;
   } finally {
-    aiBusy = false; $("aiSend").disabled = false;
+    aiBusy = false; syncAiButtons();
   }
 }
 
+// 이어서 질문은 앞선 질문이 있을 때만
+function syncAiButtons() {
+  $("aiSend").disabled = aiBusy;
+  $("aiFollow").disabled = aiBusy || !AI_HISTORY.length;
+  $("aiFollow").title = AI_HISTORY.length ? `이전 질문 "${AI_HISTORY[AI_HISTORY.length - 1].q}"의 조건을 이어받아 묻습니다` : "먼저 질문을 하나 하세요";
+}
+
+// Enter·[새 질문] / [이어서 질문] / [새 대화 시작]
+let aiEnter = false; // Enter로 보냈는지 (브라우저는 Enter도 첫 버튼을 누른 것으로 처리하므로 따로 기록)
+$("aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) aiEnter = true; });
 $("aiForm").addEventListener("submit", e => {
   e.preventDefault();
+  const mode = aiEnter ? "auto" : e.submitter && e.submitter.id === "aiFollow" ? "follow" : "new";
+  aiEnter = false;
   const q = $("aiInput").value;
   $("aiInput").value = "";
-  askAi(q);
+  askAi(q, mode);
 });
-$("aiClear").addEventListener("click", () => { $("aiLog").innerHTML = ""; AI_HISTORY.length = 0; });
+$("aiClear").addEventListener("click", () => { $("aiLog").innerHTML = ""; AI_HISTORY.length = 0; syncAiButtons(); $("aiInput").focus(); });
 
 const AI_EXAMPLES = ["종신보험 중 판매중지된 상품은 몇 개야?", "판매중인 상품의 평균 예정이율은?", "연도별로 상품이 몇 개 나왔어?",
   "사망 시 이미 납입한 보험료에서 인출금액을 차감한 금액을 지급하는 상품은?", "2023년 이후 나온 종신보험 목록 알려줘"];
 $("aiExamples").innerHTML = "예시: " + AI_EXAMPLES.map(x => `<button type="button" class="mini" data-ai-ex="${esc(x)}">${esc(x)}</button>`).join(" ");
 $("aiExamples").addEventListener("click", e => {
   const b = e.target.closest("button[data-ai-ex]");
-  if (b) askAi(b.dataset.aiEx);
+  if (b) askAi(b.dataset.aiEx, "new");
 });
 
+syncAiButtons();
 aiCheck();
